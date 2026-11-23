@@ -1,0 +1,112 @@
+# Jyggs Vibe-code Slop (Optimization Edition)
+
+An unofficial side build of **New Vegas Reloaded 4.4.1** for Fallout: New Vegas. Yes, the name is a joke. The numbers aren't!
+
+I love how 4.4.1 looks, I just didn't love how it ran on my modlist. Every door into a lamp-lit interior froze the game for
+over a second, and outside I was stuck in the 50s on a card that should do a lot better. So this build keeps the 4.4.1
+picture and goes after the cost: the stalls, the per-frame overhead, and a settings menu you can actually use with a mouse.
+
+The one thing that does change the picture is `PerformancePreset`, and it's **on by default**. It trims the sun and lamp
+shadows (shorter range, a bit softer, fewer tiny objects casting them) for roughly 2 ms back per frame. Don't want that?
+Switch it off on the menu's Performance page and you have the full 4.4.1 shadows again. Your own settings are never touched.
+
+## The door freeze is gone
+
+This was the big one for me. Cartographer sets NVR's values with scripts every time you change cells, and each of those
+calls rebuilt NVR's whole settings table. On Mojave Outpost that was 95 rebuilds per door, over a full second of frozen
+game!
+
+Now script calls get batched into one rebuild per frame, and better still, Cartographer's job is built right into the DLL.
+Location presets get applied during the loading screen instead of after you're already standing in the room.
+
+| | Before | After |
+|---|---|---|
+| Script settings calls (`BatchScriptSettings`) | 95 reloads, 1060-1100 ms, worst frame ~1100 ms | 1 reload, 11-13 ms, worst frame 45-52 ms |
+| Built-in Locations (no Cartographer.esp) | worst frame 45-52 ms | worst frame ~34 ms, no frame over 50 ms |
+| Locations apply, faster lookups | 26.8 ms, worst frame at WastelandNV 222 ms | 7.7-12 ms, worst frame ~34 ms |
+
+Your Cartographer preset mods (Mojave Nights NVR and friends) keep working, since the DLL reads the same
+`Data\Config\Cartographer` files. Just disable `Cartographer.esp` itself. More on that in
+[docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
+
+## Faster frames
+
+Most of the per-frame savings come from the **UNOFFICIAL Boutique fork by CountessAshe and Winston**, which this build sits
+on top of. They measured it on a GTX 1070 at 1440p with 4.4.1's default settings:
+
+| Scene | 4.4.1 | Boutique |
+|---|---|---|
+| Lamp-lit casino interior | 24.7 ms (40.5 FPS) | 15.8 ms (63.1 FPS) |
+| Desert at noon | 27.8 ms (36.0 FPS) | 19.7 ms (50.7 FPS) |
+
+What each of their changes does is in [docs/UNOFFICIAL-4.4.1-BOUTIQUE.md](docs/UNOFFICIAL-4.4.1-BOUTIQUE.md).
+
+On top of that I added a few sun shadow tricks. `PartialShadowAtlasUpdate` and `SharedShadowWalk` keep the same picture
+and are always on. `SpreadLod` spreads the far shadow update out so you don't get a spike every 4th frame, and it comes
+with the preset. I haven't measured them one by one yet, so I'm not putting numbers on them.
+
+And the preset: on my RX 7900 XTX it took NVR's own GPU time from about **6.2 to 4.0 ms** per frame in the Wasteland. That's
+one card in one area, so if you benchmark it on yours, I'd love to see the results!
+
+Everything I've measured, with where and how, lives in [docs/OPTIMIZATIONS.md](docs/OPTIMIZATIONS.md). If I didn't
+measure something, it says so.
+
+## DXVK (optional, but wow)
+
+Honestly, the biggest jump on my PC wasn't NVR at all. Swapping AMD's D3D9 driver for DXVK took me from 52-56 FPS to about
+130 in the same build, because the native driver was choking on draw calls. NVR's own passes cost 2.4-4 ms either way.
+
+It's included in [`DXVK (optional)/`](DXVK%20(optional)), the unmodified official DXVK 3.1.1 with its license. You need a
+GPU with Vulkan 1.3, and I've only tried it on my AMD card. If the game won't start or something looks off, delete the two
+files and you're back to normal.
+
+## Install
+
+Grab the zip from [Releases](https://github.com/Jyggalag999/Jyggs-Vibe-code-Slop-Optimization-Edition/releases). It's
+the whole thing, DLL, shaders and textures, so you don't need the official NVR files. Install it like any other mod with
+your mod manager (or unzip it into `Data`), and disable or remove any other NVR so they don't overwrite each other. The End
+key opens the menu.
+
+Updating from another NVR build? Keep your `NewVegasReloaded.dll.toml`, the zip doesn't include one. On a fresh install the
+game makes it for you from the defaults.
+
+For DXVK, grab the separate DXVK zip from the same release and copy `d3d9.dll` and `dxvk.conf` next to `FalloutNV.exe`.
+
+**Preset not kicking in?** If you ran an earlier build of this fork, your toml might already say
+`PerformancePreset = false`. Flip it on in the menu and it sticks.
+
+**Can I use it with the official NVR or the Boutique build?** Not at the same time. Same DLL name, so this one replaces them.
+
+## Compile it yourself
+
+You'll want Windows, Visual Studio 2019 (Build Tools is fine) with the C++ x86 toolset and Windows SDK, and git. Run these
+from a "Developer Command Prompt for VS 2019":
+
+```powershell
+git clone --recurse-submodules https://github.com/Jyggalag999/Jyggs-Vibe-code-Slop-Optimization-Edition.git
+cd Jyggs-Vibe-code-Slop-Optimization-Edition
+msbuild TESReloaded.sln -t:Restore -p:RestorePackagesConfig=true
+msbuild TESReloaded.sln -target:NewVegasReloaded /property:Configuration=Release /property:Platform=x86 -m
+```
+
+The first msbuild line grabs the D3DX9 NuGet package, and `toml11` comes in as a submodule. You end up with
+`NewVegasReloaded\Release\NewVegasReloaded.dll`. The defaults file is `resource\NewVegasReloaded.dll.defaults.toml`, and
+`build.bat "NewVegasReloaded" "C:/DeployFolder/"` does the build and copies everything to a folder for you.
+
+## Credits and license
+
+This is **not** an official NVR build, and the NVR / TESReloaded team has nothing to do with it. Please don't ask them for
+help with it, open an issue here instead!
+
+All the real heavy lifting is theirs: New Vegas Reloaded / TESReloaded by Alessio Tamburini (Alenet), maintained by Llde,
+with the NVR team and everyone in [License.md](License.md), and the 4.4.1 release by pr0bability. The performance base is
+CountessAshe and Winston's Boutique fork, itself a port of
+[NVR UNOFFICIAL Optimized](https://github.com/adeesababa/NVR-Unofficial-Optimized). [WallSoGB](https://github.com/WallSoGB)'s
+IDA database made the engine digging possible. [DXVK](https://github.com/doitsujin/dxvk) is by Philip Rebohle and
+contributors (zlib/libpng license, see `DXVK (optional)/LICENSE-DXVK.txt`). Dear ImGui, toml11 and the rest of `lib/` keep
+their own licenses.
+
+Same license as the original: GPL-3.0 with the extra terms in [License.md](License.md), provided as is. Builds have to keep
+a custom name and can't be sold.
+
+The original NVR 4.4.1 / Boutique readme is still here: [docs/README-NVR-441-and-Boutique.md](docs/README-NVR-441-and-Boutique.md).

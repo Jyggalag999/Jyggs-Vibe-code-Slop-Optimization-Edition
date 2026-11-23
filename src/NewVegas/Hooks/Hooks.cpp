@@ -1,0 +1,106 @@
+#include "Hooks.h"
+#include "Locations.h"
+
+void AttachHooks() {
+
+	SettingsMainStruct* SettingsMain = &TheSettingManager->SettingsMain;
+
+	DetourTransactionBegin();
+	DetourUpdateThread(GetCurrentThread());
+	DetourAttach(&(PVOID&)ReadSetting, &ReadSettingHook);
+	DetourAttach(&(PVOID&)WriteSetting, &WriteSettingHook);
+	DetourAttach(&(PVOID&)NewMain, &NewMainHook);
+	DetourAttach(&(PVOID&)InitializeRenderer, &InitializeRendererHook);
+	DetourAttach(&(PVOID&)NewTES, &NewTESHook);
+	DetourAttach(&(PVOID&)NewPlayerCharacter, &NewPlayerCharacterHook);
+	DetourAttach(&(PVOID&)NewSceneGraph, &NewSceneGraphHook);
+	DetourAttach(&(PVOID&)NewMainDataHandler, &NewMainDataHandlerHook);
+	DetourAttach(&(PVOID&)NewMenuInterfaceManager, &NewMenuInterfaceManagerHook);
+	DetourAttach(&(PVOID&)NewQueuedModelLoader, &NewQueuedModelLoaderHook);
+	DetourAttach(&(PVOID&)CreateVertexShader, &CreateVertexShaderHook);
+	DetourAttach(&(PVOID&)CreatePixelShader, &CreatePixelShaderHook);
+	DetourAttach(&(PVOID&)SetShaderPackage, &SetShaderPackageHook);
+	DetourAttach(&(PVOID&)Render, &RenderHook);
+	DetourAttach(&(PVOID&)ProcessImageSpaceShaders, &ProcessImageSpaceShadersHook);
+	DetourAttach(&(PVOID&)RenderWorldSceneGraph, &RenderWorldSceneGraphHook);
+	DetourAttach(&(PVOID&)RenderFirstPerson, &RenderFirstPersonHook);
+	DetourAttach(&(PVOID&)SetShaders, &SetShadersHook);
+	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
+
+	DetourAttach(&(PVOID&)GetWaterHeightLOD, &GetWaterHeightLODHook);
+	if (SettingsMain->Main.ForceReflections) {
+		DetourAttach(&(PVOID&)RenderReflections, &RenderReflectionsHook);
+	}
+
+	DetourAttach(&(PVOID&)RenderPipboy, &RenderPipboyHook);
+	DetourAttach(&(PVOID&)ShowDetectorWindow, &ShowDetectorWindowHook);
+	DetourAttach(&(PVOID&)LoadForm, &LoadFormHook);
+	if (SettingsMain->FlyCam.Enabled) DetourAttach(&(PVOID&)UpdateFlyCam, &UpdateFlyCamHook);
+	DetourTransactionCommit();
+
+	// Vanilla shader specific hooks.
+	kSkyShaderConstantsDetour.ReplaceVirtualFunc(0x10AFE94, SkyShader__UpdateConstants);
+
+	WriteRelCall(0xBE0B73, NiD3DVertexShaderEx::Free);
+	WriteRelCall(0xBE0AF3, NiD3DPixelShaderEx::Free);
+	SafeWrite32(0x00E7624D, sizeof(RenderManager));
+	SafeWrite32(0x00466606, sizeof(TESWeatherEx));
+	SafeWrite32(0x0046CF9B, sizeof(TESWeatherEx));
+
+	SafeWrite8(0xB575AA, 0x75);				// Prevent shader package destruction
+	SafeWrite8(0x008751C0, 0);				// Stops to clear the depth buffer when rendering the 1st person node
+	SafeWrite16(0x0086A170, 0x9090);		// Avoids to pause the game when ALT-TAB
+
+	WriteRelJump(Jumpers::DetectorWindow::CreateTreeViewHook, DetectorWindowCreateTreeViewHook);
+	WriteRelJump(Jumpers::DetectorWindow::DumpAttributesHook, DetectorWindowDumpAttributesHook);
+	WriteRelJump(Jumpers::DetectorWindow::ConsoleCommandHook, DetectorWindowConsoleCommandHook);
+	WriteRelCall(Jumpers::DetectorWindow::SetNodeName, DetectorWindowSetNodeName);
+	kRenderInterfaceDetour.ReplaceCall(Jumpers::RenderInterface::Hook, RenderInterfaceHook);
+	WriteRelJump(0x871290, RenderShadowMapHook);
+	//SafeWriteJump(Jumpers::Shadows::RenderShadowMap1Hook,		(UInt32)RenderShadowMap1Hook);
+	//SafeWriteJump(Jumpers::Shadows::AddCastShadowFlagHook, (UInt32)AddCastShadowFlagHook);
+	WriteRelJump(Jumpers::Shadows::LeavesNodeNameHook, LeavesNodeNameHook);
+	WriteRelCall(Jumpers::MainMenuMusic::Fix1, MainMenuMusicFix);
+	WriteRelCall(Jumpers::MainMenuMusic::Fix2, MainMenuMusicFix);
+
+	WriteRelJump(0x004E4C3B, 0x004E4C42); // Fixes reflections when cell water height is not like worldspace water height
+	WriteRelJump(0x004E4DA4, 0x004E4DAC); // Fixes reflections on the distant water
+	WriteRelCall(0x00875B86, 0x00710AB0); // Sets the world fov at the end of 1st person rendering
+	WriteRelCall(0x00875B9D, 0x00710AB0); // Sets the world fov at the end of 1st person rendering
+	WriteRelJump(0x00C03F49, 0x00C03F5A); // Fixes wrong rendering for image space effects
+
+	AttachLocationHooks();	// Locations: presets of the destination, applied before it loads
+
+	WriteRelCall(0x9BB158, MuzzleLightCullingFix);
+	WriteRelCall(0x879061, CreateSaveTextureHook); // Fixes image corruption in save screenshots when using DXVK with the HDR mod 
+
+	if (TheSettingManager->SettingsMain.Main.ReplaceIntro) 
+		WriteRelJump(Jumpers::SetTileShaderConstants::Hook, SetTileShaderConstantsHook);
+
+	if (TheSettingManager->SettingsMain.Main.RemovePrecipitations) {
+		WriteRelJump(0x0063AFC4, 0x0063AFD8);
+		WriteRelJump(0x0063A5CB, 0x0063A5DE);
+	}
+
+	// Vanilla fog remover.
+	for (UInt32 uiAddress : {0x6335EE, 0xB795FA, 0xB7AE86, 0xB7B539, 0xB7C3AB, 0xB86738, 0xBAA43B, 0xBB1B5B, 0xBB1FA5, 0xBB670E, 0xBBDF26, 0xBBE3EC, 0xBC6E33, 0xBD4BED }) {
+		WriteRelCall(uiAddress, ShadowSceneNode__GetFogPropertyEx);
+	}
+
+	// End frame hook for effect reload.
+	SafeWrite32(0x10EE63C, (UInt32)NiDX9Renderer__Do_EndFrame);
+
+	if (TheSettingManager->SettingsMain.Main.RemoveUnderwater)
+		WriteRelCall(0x4EC8EE, WaterFogRemover);
+
+	//SafeWriteCall(0xB7DBAC, (UInt32)ShadowLightShader__UpdateLights);
+
+
+	if (SettingsMain->FlyCam.Enabled) {
+		WriteRelJump(Jumpers::FlyCam::UpdateForwardFlyCamHook, UpdateForwardFlyCamHook);
+		WriteRelJump(Jumpers::FlyCam::UpdateBackwardFlyCamHook, UpdateBackwardFlyCamHook);
+		WriteRelJump(Jumpers::FlyCam::UpdateRightFlyCamHook, UpdateRightFlyCamHook);
+		WriteRelJump(Jumpers::FlyCam::UpdateLeftFlyCamHook, UpdateLeftFlyCamHook);
+	}
+
+}
