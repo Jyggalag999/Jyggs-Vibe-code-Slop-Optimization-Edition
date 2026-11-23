@@ -15,6 +15,7 @@ namespace {
 const UInt32 kGetCellImageSpace = 0x00547650;		// TESObjectCELL::GetImageSpace
 const UInt32 kSetCellImageSpace = 0x00547750;		// TESObjectCELL::SetImageSpace (null removes the cell's image space)
 const UInt32 kSetImageSpaceParameters = 0x00B4F430;	// BSShaderManager::SetImageSpaceParameters(float* traits), cdecl
+const UInt32 kGetUsableImageSpace = 0x00547680;	// TESObjectCELL::GetUsableImageSpace (the cell's own, else the default interior image space 0x160)
 const UInt32 kImageSpaceMakeDefault = 0x0052B780;	// TESImageSpace::MakeDefault (the game's default trait values), thiscall
 const UInt32 kGameSettingCollection = 0x011C8048;	// GameSettingCollection** (singleton)
 const UInt32 kGetGameSetting = 0x004F8A90;			// GameSettingCollection::GetSetting(const char* name, Setting** out)
@@ -447,12 +448,28 @@ void LocationManager::ApplyLighting(TESObjectCELL* apCell, const Target& aTarget
 		SavedImageSpace = (void*)ThisCall(kGetCellImageSpace, apCell);
 		SavedTemplate = apCell->lightingTemplate;
 		SavedInherit = apCell->inheritFlags;
-		// Seed our forms with what the cell had, so keys the preset does not set keep the cell's values.
+		// Seed our forms with what the cell shows now, so keys the preset does not set keep the cell's values.
 		// Forms from CreateForm start with every value at 0 (Cinematic Saturation 0 = black and white interior).
-		if (SavedImageSpace) memcpy(ImageTraits(ImageSpace), ImageTraits((TESImageSpace*)SavedImageSpace), 33 * sizeof(float));
+		// Called before the cell is pointed at our image space, so this is the cell's own or the default interior one.
+		TESImageSpace* usable = (TESImageSpace*)ThisCall(kGetUsableImageSpace, apCell);
+		if (usable && usable != ImageSpace) memcpy(ImageTraits(ImageSpace), ImageTraits(usable), 33 * sizeof(float));
 		else ThisCall(kImageSpaceMakeDefault, ImageSpace);
-		if (SavedTemplate && (SavedInherit & kInheritAll) == kInheritAll) memcpy(TemplateData(Template), TemplateData((BGSLightingTemplate*)SavedTemplate), sizeof(LightingData));
-		else if (apCell->lighting) memcpy(TemplateData(Template), (void*)apCell->lighting, sizeof(LightingData));
+		// Lighting: per field, like TESObjectCELL::GetDataAmbient / GetFogNear etc.: the template's value when its inherit bit is set
+		// and the cell has a template, else the cell's own INTERIOR_DATA. Bits 0x1..0x100 = ambient, directional, fog color, fog near,
+		// fog far, directional rotation (XY and Z), directional fade, clip distance, fog power.
+		LightingData* own = (LightingData*)apCell->lighting;
+		LightingData* tmpl = SavedTemplate ? TemplateData((BGSLightingTemplate*)SavedTemplate) : nullptr;
+		auto from = [&](unsigned aiBit) { return (tmpl && (SavedInherit & aiBit)) ? tmpl : own; };
+		LightingData* dst = TemplateData(Template);
+		if (LightingData* s = from(0x1))   memcpy(dst->Ambient, s->Ambient, 4);
+		if (LightingData* s = from(0x2))   memcpy(dst->Directional, s->Directional, 4);
+		if (LightingData* s = from(0x4))   memcpy(dst->Fog, s->Fog, 4);
+		if (LightingData* s = from(0x8))   dst->FogNear = s->FogNear;
+		if (LightingData* s = from(0x10))  dst->FogFar = s->FogFar;
+		if (LightingData* s = from(0x20))  { dst->DirectionalXY = s->DirectionalXY; dst->DirectionalZ = s->DirectionalZ; }
+		if (LightingData* s = from(0x40))  dst->DirectionalFade = s->DirectionalFade;
+		if (LightingData* s = from(0x80))  dst->FogClip = s->FogClip;
+		if (LightingData* s = from(0x100)) dst->FogPower = s->FogPower;
 		ThisCall(kSetCellImageSpace, apCell, ImageSpace);
 		apCell->lightingTemplate = Template;
 		apCell->inheritFlags |= kInheritAll;
