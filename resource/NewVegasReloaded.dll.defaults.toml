@@ -80,7 +80,7 @@ ForceReflections = true     # Always render the full world in reflection for HD 
 RemoveUnderwater = false    # Disables fog underwater. Not compatible with custom underwater shader.
 
 [_Main.Main.Locations]
-Enabled = true          # Built-in Cartographer: picks NVR / lighting / fog / game settings presets for the current cell or worldspace from Data\Config\Cartographer. Stays off when Cartographer.esp is loaded.
+Enabled = false         # Built-in Cartographer (off by default; turn on if you use Cartographer INIs without Cartographer.esp): picks NVR / lighting / fog / game settings presets for the current cell or worldspace from Data\Config\Cartographer. Stays off when Cartographer.esp is loaded.
 BlendSeconds = 0.0      # Seconds to blend numeric values when presets change without a load (menu edits, reload). 0 = instant. Loads always switch instantly.
 DebugLog = true         # Log what Locations picks and applies.
 PresetEditor = true     # Show the Presets page in the menu: create, edit, save and delete the Cartographer preset INIs, see where each is used and go to those locations.

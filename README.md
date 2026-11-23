@@ -26,7 +26,8 @@ Location presets get applied during the loading screen instead of after you're a
 | Locations apply, faster lookups | 26.8 ms, worst frame at WastelandNV 222 ms | 7.7-12 ms, worst frame ~34 ms |
 
 Your Cartographer preset mods (Mojave Nights NVR and friends) keep working, since the DLL reads the same
-`Data\Config\Cartographer` files. Just disable `Cartographer.esp` itself. More on that in
+`Data\Config\Cartographer` files. Just disable `Cartographer.esp` itself and set
+`[_Main.Main.Locations] Enabled = true` in your toml (it's off by default). More on that in
 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
 
 ## Faster frames

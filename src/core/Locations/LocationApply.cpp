@@ -15,6 +15,7 @@ namespace {
 const UInt32 kGetCellImageSpace = 0x00547650;		// TESObjectCELL::GetImageSpace
 const UInt32 kSetCellImageSpace = 0x00547750;		// TESObjectCELL::SetImageSpace (null removes the cell's image space)
 const UInt32 kSetImageSpaceParameters = 0x00B4F430;	// BSShaderManager::SetImageSpaceParameters(float* traits), cdecl
+const UInt32 kImageSpaceMakeDefault = 0x0052B780;	// TESImageSpace::MakeDefault (the game's default trait values), thiscall
 const UInt32 kGameSettingCollection = 0x011C8048;	// GameSettingCollection** (singleton)
 const UInt32 kGetGameSetting = 0x004F8A90;			// GameSettingCollection::GetSetting(const char* name, Setting** out)
 const UInt32 kFormHeapAllocate = 0x00401000;
@@ -446,6 +447,12 @@ void LocationManager::ApplyLighting(TESObjectCELL* apCell, const Target& aTarget
 		SavedImageSpace = (void*)ThisCall(kGetCellImageSpace, apCell);
 		SavedTemplate = apCell->lightingTemplate;
 		SavedInherit = apCell->inheritFlags;
+		// Seed our forms with what the cell had, so keys the preset does not set keep the cell's values.
+		// Forms from CreateForm start with every value at 0 (Cinematic Saturation 0 = black and white interior).
+		if (SavedImageSpace) memcpy(ImageTraits(ImageSpace), ImageTraits((TESImageSpace*)SavedImageSpace), 33 * sizeof(float));
+		else ThisCall(kImageSpaceMakeDefault, ImageSpace);
+		if (SavedTemplate && (SavedInherit & kInheritAll) == kInheritAll) memcpy(TemplateData(Template), TemplateData((BGSLightingTemplate*)SavedTemplate), sizeof(LightingData));
+		else if (apCell->lighting) memcpy(TemplateData(Template), (void*)apCell->lighting, sizeof(LightingData));
 		ThisCall(kSetCellImageSpace, apCell, ImageSpace);
 		apCell->lightingTemplate = Template;
 		apCell->inheritFlags |= kInheritAll;
