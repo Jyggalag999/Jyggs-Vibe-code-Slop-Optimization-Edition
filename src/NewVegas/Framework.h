@@ -25,6 +25,7 @@
 #include "../lib/Nvidia/nvapi.h"
 #include "../lib/Bink/bink.h"
 #include "../Base/Logger.h"
+#include "../Base/StartupTrace.h"
 #include "../Base/Types.h"
 #include "../Base/SafeWrite.h"
 #include "../Base/PluginVersion.h"

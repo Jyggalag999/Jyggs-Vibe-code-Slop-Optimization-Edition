@@ -86,11 +86,12 @@ DebugLog = true         # Log what Locations picks and applies.
 PresetEditor = true     # Show the Presets page in the menu: create, edit, save and delete the Cartographer preset INIs, see where each is used and go to those locations.
 
 [_Main.Main.Profiler]
-Enabled = true          # Log how much GPU time each effect and shadow map pass costs, sorted by cost, to NewVegasReloaded.log.
+Enabled = false         # Log how much GPU time each effect and shadow map pass costs, sorted by cost, to NewVegasReloaded.log.
 IntervalSeconds = 10.0  # Seconds between two profiler reports.
 AutoBenchmark = false   # Tooling: flips the Performance preset off/on every AutoBenchmarkSeconds, tags each report [preset ON/OFF] and appends a row per window to NewVegasReloaded.benchmark.csv. Your toml is not changed; turning this off restores your own PerformancePreset value. Needs Enabled = true.
 AutoBenchmarkSeconds = 20.0  # Length of each measured window (a 3 s settling period after every flip is discarded).
-CellChangeTiming = true # After every change of cell or worldspace, measure the next 300 frames (frame times, script setting calls, settings reloads, shader switches, Locations apply) and log one [CellChange] line.
+CellChangeTiming = false # After every change of cell or worldspace, measure the next 300 frames (frame times, script setting calls, settings reloads, shader switches, Locations apply) and log one [CellChange] line.
+StartupLog = false      # Debug: log each startup step ([Startup] lines, with timestamps) plus Windows/game/d3d9 (DXVK) versions and every loaded plugin DLL. Turn on when the game will not reach the main menu and send NewVegasReloaded.log.
 
 [_Main.Menu.Keys]
 KeyEnable = 207             # Keycode for the hotkey that opens and closes the menu.

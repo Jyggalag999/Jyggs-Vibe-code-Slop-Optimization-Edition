@@ -29,6 +29,16 @@ void SettingManager::Configuration::Init() {
 	}
 	catch (const std::exception& e) {
 		Logger::Log("error loading defaults toml: %s", e.what());
+		// Every setting falls back to this file; without it LoadSettings dies with no message. Say why and exit.
+		Logger::Log("[Startup] ERROR: defaults toml missing or broken, exiting");
+		char text[2048];
+		_snprintf_s(text, sizeof(text), _TRUNCATE,
+			"NewVegasReloaded.dll.defaults.toml could not be loaded.\n\n%s\n\n"
+			"It must be in Data\\NVSE\\Plugins, next to NewVegasReloaded.dll.\n"
+			"Reinstall Jyggs Vibe-code Slop (Optimization Edition): for a manual install, everything in the zip goes inside the Data folder.",
+			e.what());
+		MessageBoxA(NULL, text, "New Vegas Reloaded", MB_OK | MB_ICONERROR);
+		ExitProcess(0);
 	}
 
 	try {
@@ -676,6 +686,7 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Profiler.AutoBenchmark = GetSettingI("Main.Main.Profiler", "AutoBenchmark");
 	SettingsMain.Profiler.AutoBenchmarkSeconds = GetSettingF("Main.Main.Profiler", "AutoBenchmarkSeconds");
 	SettingsMain.Profiler.CellChangeTiming = GetSettingI("Main.Main.Profiler", "CellChangeTiming");
+	SettingsMain.Profiler.StartupLog = GetSettingI("Main.Main.Profiler", "StartupLog");
 
 	SettingsMain.Develop.DebugMode = GetSettingI("Main.Develop.Main", "DebugMode");
 	SettingsMain.Develop.TraceShaders = GetSettingI("Main.Develop.Main", "TraceShaders");

@@ -60,6 +60,9 @@ It's included in [`DXVK (optional)/`](DXVK%20(optional)), the unmodified officia
 GPU with Vulkan 1.3, and I've only tried it on my AMD card. If the game won't start or something looks off, delete the two
 files and you're back to normal.
 
+My `dxvk.conf` makes the launcher report the same AMD GPU as the game. DXVK only does that for `FalloutNV.exe` on its own,
+so the launcher saw your real card and could pick different settings.
+
 ## Install
 
 Grab the zip from [Releases](https://github.com/Jyggalag999/Jyggs-Vibe-code-Slop-Optimization-Edition/releases). It's
@@ -76,6 +79,11 @@ For DXVK, grab the separate DXVK zip from the same release and copy `d3d9.dll` a
 `PerformancePreset = false`. Flip it on in the menu and it sticks.
 
 **Can I use it with the official NVR or the Boutique build?** Not at the same time. Same DLL name, so this one replaces them.
+
+**Game won't reach the main menu?** Since 1.1 you get a popup if the defaults toml or the shader folder is missing, which
+means only part of the zip got installed. If it still won't start, set `StartupLog = true` under `[_Main.Main.Profiler]` in
+`NewVegasReloaded.dll.toml` and send me `NewVegasReloaded.log` and your `CrashLogger.log`. The last `[Startup]` line shows
+where it stopped.
 
 ## Compile it yourself
 

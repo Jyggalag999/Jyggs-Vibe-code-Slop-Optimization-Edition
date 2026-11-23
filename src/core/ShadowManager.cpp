@@ -43,13 +43,11 @@ void ShadowManager::Initialize() {
 	TheShadowManager->ShadowMapClearPixel = (ShaderRecordPixel*) ShaderRecord::LoadShader("ShadowMapClear.pso", "Shadows\\");
 
 	// Make sure samplers are not reset on SetCT as that causes errors.
-	TheShadowManager->ShadowMapVertex->ClearSamplers = false;
-	TheShadowManager->ShadowMapPixel->ClearSamplers = false;
-	TheShadowManager->ShadowCubeMapVertex->ClearSamplers = false;
-	TheShadowManager->ShadowCubeMapPixel->ClearSamplers = false;
-	TheShadowManager->ShadowMapBlurVertex->ClearSamplers = false;
-	TheShadowManager->ShadowMapBlurPixel->ClearSamplers = false;
-	TheShadowManager->ShadowMapClearPixel->ClearSamplers = false;
+	// Null-safe: a missing shader file used to crash here before the check below could log it.
+	ShaderRecord* shadowShaders[] = { TheShadowManager->ShadowMapVertex, TheShadowManager->ShadowMapPixel, TheShadowManager->ShadowCubeMapVertex,
+		TheShadowManager->ShadowCubeMapPixel, TheShadowManager->ShadowMapBlurVertex, TheShadowManager->ShadowMapBlurPixel, TheShadowManager->ShadowMapClearPixel };
+	for (ShaderRecord* shader : shadowShaders)
+		if (shader) shader->ClearSamplers = false;
 
 	TheShadowManager->ShadowShadersLoaded = true;
     if (TheShadowManager->ShadowMapVertex == nullptr || TheShadowManager->ShadowMapPixel == nullptr  || TheShadowManager->ShadowMapBlurVertex  == nullptr

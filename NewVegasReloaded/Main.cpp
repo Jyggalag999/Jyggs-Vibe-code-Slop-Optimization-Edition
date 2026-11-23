@@ -9,12 +9,16 @@ extern "C" {
 	static void MessageHandler(NVSEMessagingInterface::Message* msg) {
 		switch (msg->type) {
 		case NVSEMessagingInterface::kMessage_PostLoad:
+			StartupTrace::Stage("PostLoad (all NVSE plugins loaded)");
+			StartupTrace::DumpModules("PostLoad");
 			if (!GetModuleHandle(L"LODFlickerFix.dll")) {
+				Logger::Log("[Startup] ERROR: LODFlickerFix.dll not loaded, exiting");
 				MessageBox(NULL, L"LOD Flicker Fix not found.\nNew Vegas Reloaded cannot be used without it, please install it.", L"New Vegas Reloaded", MB_OK | MB_ICONERROR);
 				ExitProcess(0);
 			}
 
 			if (!GetModuleHandle(L"VanillaPlusTerrain.dll")) {
+				Logger::Log("[Startup] ERROR: VanillaPlusTerrain.dll not loaded, exiting");
 				MessageBox(NULL, L"Vanilla Plus Terrain not found.\nNew Vegas Reloaded cannot be used without it, please install it.", L"New Vegas Reloaded", MB_OK | MB_ICONERROR);
 				ExitProcess(0);
 			}
@@ -24,10 +28,12 @@ extern "C" {
 			TheSettingManager->GameLoading = true;
 			break;
 		case NVSEMessagingInterface::kMessage_PostLoadGame:
+			StartupTrace::Stage("PostLoadGame (save loaded)");
 			TheSettingManager->GameLoading = false;
 			TheShaderManager->InitializeConstants();
 			break;
 		case NVSEMessagingInterface::kMessage_DeferredInit:
+			StartupTrace::Stage("DeferredInit (game data loaded, main menu next)");
 			CombineDepthEffect* depthEffect = TheShaderManager->Effects.CombineDepth;
 
 			if (!depthEffect->johnnyguitar) {
@@ -94,6 +100,7 @@ extern "C" {
 
 		PluginVersion::CreateVersionString();
 		Logger::Log(PluginVersion::VersionString);
+		StartupTrace::Begin();
 
 		CommandManager::Initialize(Interface);
 
@@ -103,9 +110,28 @@ extern "C" {
 			
 			LocationManager::SetConsoleInterface((NVSEConsoleInterface*)Interface->QueryInterface(kInterface_Console));
 
+			StartupTrace::Stage("Loading settings (toml)");
 			SettingManager::Initialize();
 			TheSettingManager->LoadSettings();
+			StartupTrace::SetEnabled(TheSettingManager->SettingsMain.Profiler.StartupLog);
+
+			// Shaders are compiled from Data\Shaders\NewVegasReloaded at startup; without them the renderer
+			// crashes later with a null shader. Stop here with a clear message instead.
+			if (GetFileAttributesA(ShadersPath "Shadows\\ShadowMap.vso.hlsl") == INVALID_FILE_ATTRIBUTES
+				|| GetFileAttributesA(EffectsPath) == INVALID_FILE_ATTRIBUTES) {
+				Logger::Log("[Startup] ERROR: %s or %s missing, exiting", ShadersPath, EffectsPath);
+				MessageBoxA(NULL,
+					"The New Vegas Reloaded shader files are missing.\n\n"
+					"Expected: Data\\Shaders\\NewVegasReloaded\\Shaders and Data\\Shaders\\NewVegasReloaded\\Effects\n\n"
+					"Install the full Jyggs Vibe-code Slop (Optimization Edition) zip, not only the DLL: "
+					"for a manual install, everything in the zip (nvse, Shaders, Textures) goes inside the Data folder.",
+					"New Vegas Reloaded", MB_OK | MB_ICONERROR);
+				ExitProcess(0);
+			}
+
+			StartupTrace::Stage("Attaching hooks");
 			AttachHooks();
+			StartupTrace::Stage("Hooks attached, waiting for the game");
 		}
 		return true;
 

@@ -178,6 +178,9 @@
     <ClInclude Include="..\src\base\Logger.h">
       <Filter>Base</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\base\StartupTrace.h">
+      <Filter>Base</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\base\PluginVersion.h">
       <Filter>Base</Filter>
     </ClInclude>
@@ -454,6 +457,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\base\Logger.cpp">
+      <Filter>Base</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\base\StartupTrace.cpp">
       <Filter>Base</Filter>
     </ClCompile>
     <ClCompile Include="..\src\base\PluginVersion.cpp">

@@ -111,6 +111,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\src\base\Logger.cpp" />
+    <ClCompile Include="..\src\base\StartupTrace.cpp" />
     <ClCompile Include="..\src\base\PluginVersion.cpp" />
     <ClCompile Include="..\src\base\SafeWrite.cpp" />
     <ClCompile Include="..\src\core\BinkManager.cpp" />
@@ -228,6 +229,7 @@
     <ClCompile Include="..\src\NewVegas\Hooks\Shadows.cpp" />
     <ClCompile Include="..\src\NewVegas\Managers.cpp" />
     <ClInclude Include="..\src\base\Logger.h" />
+    <ClInclude Include="..\src\base\StartupTrace.h" />
     <ClInclude Include="..\src\base\PluginVersion.h" />
     <ClInclude Include="..\src\base\SafeWrite.h" />
     <ClInclude Include="..\src\base\Types.h" />

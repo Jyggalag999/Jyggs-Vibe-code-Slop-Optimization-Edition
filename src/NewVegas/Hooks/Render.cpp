@@ -397,6 +397,7 @@ BSRenderedTexture* __cdecl CreateSaveTextureHook(BSString* apName, const UInt32 
 // 0xE69660
 bool __fastcall NiDX9Renderer__Do_EndFrame(NiDX9Renderer* apThis, void*) {
 	bool bResult = ThisStdCall<bool>(0xE69660, apThis);
+	StartupTrace::FirstFrame();
 
 	// Reload effects if queued.
 	if (TheShaderManager && TheShaderManager->EffectReloadQueued) {

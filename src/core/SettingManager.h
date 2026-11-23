@@ -203,6 +203,7 @@ struct SettingsMainStruct {
 		bool	AutoBenchmark;		// alternate the Performance preset off/on every AutoBenchmarkSeconds and write a CSV row per window
 		float	AutoBenchmarkSeconds;
 		bool	CellChangeTiming;	// log a [CellChange] line with frame times and settings work for 300 frames after each location change
+		bool	StartupLog;			// [Startup] stage lines + loaded DLL list in NewVegasReloaded.log
 	};
 
 	struct DevelopStruct {

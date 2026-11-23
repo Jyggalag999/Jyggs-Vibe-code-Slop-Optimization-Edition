@@ -3,9 +3,13 @@
 NiDX9Renderer* (__thiscall* InitializeRenderer)(NiDX9Renderer*) = (NiDX9Renderer* (__thiscall*)(NiDX9Renderer*))Hooks::InitializeRenderer;
 NiDX9Renderer* __fastcall InitializeRendererHook(NiDX9Renderer* This, UInt32 edx) {
 
+	StartupTrace::Stage("Creating the D3D9 device (game renderer)");
 	TheRenderManager = (RenderManager*)(*InitializeRenderer)(This);
+	StartupTrace::Stage("D3D9 device created, extending the render manager");
 	TheRenderManager->Initialize();
+	StartupTrace::Stage("Starting managers (textures, shaders, effects)");
 	InitializeManagers();
+	StartupTrace::Stage("Managers started");
 	return TheRenderManager;
 
 }
