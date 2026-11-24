@@ -1,5 +1,7 @@
 # NVR Unofficial Jyggs Vibecoded Slop v1.2
 
+![Jyggs Vibe-code Slop banner](docs/images/banner.png)
+
 An unofficial side build of **New Vegas Reloaded 4.4.1** for Fallout: New Vegas.
 
 I love how 4.4.1 looks, I just didn't love how it ran on my modlist. Every door into a lamp-lit interior froze the game for
