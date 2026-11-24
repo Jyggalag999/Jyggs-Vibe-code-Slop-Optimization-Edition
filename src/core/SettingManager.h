@@ -29,6 +29,8 @@ struct SettingsMainStruct {
 		bool	CubeMapCameraCulling;
 		bool	PartialShadowAtlasUpdate;
 		bool	SharedShadowWalk;
+		bool	HiddenObjectCulling;		// Vegas Shaders port: skip later lamp-only passes of objects that drew 0 pixels (needs a restart to switch on)
+		UInt8	HiddenObjectCullingMaxAge;	// oldest occlusion answer (frames) that counts, 1-7
 		bool	BatchScriptSettings;	// script NVRSetSetting calls rebuild the settings once per frame (false = on every call, as in 4.4.1)
 		UInt8	AnisotropicFilter;
 		UInt16	ScreenshotKey;
@@ -153,6 +155,7 @@ struct SettingsMainStruct {
 	struct MenuStruct {
 		UInt8	KeyEnable;
 		UInt8	KeySave;
+		UInt8	KeyLocations;
 		UInt8	AccentColor[3];
 		UInt8	BackgroundColor[3];
 		UInt8	PanelColor[3];
@@ -340,6 +343,8 @@ public:
 		void			FillSections(StringList* Sections, const char* ParentSection);
 		void			FillSettings(SettingList* Nodes, const char* Section);
 		void			SetValue(ConfigNode* Node);
+		void			SetPresetValue(ConfigNode* Node);	// writes the user's override of a Performance preset value (_Preset.Performance.<Section>.<Key>)
+		bool			RemovePresetValue(const char* Section, const char* Key);	// deletes that override (back to the preset's default); true if one existed
 		bool			GetValue(const char* Section, const char* Key, char* Value); // cached FillNode value; Value must hold ConfigNode::Value (80)
 		bool			PresetActive();	// Main.Main.Performance PerformancePreset (user value, else default); cached until the config changes
 		bool			PresetLookup(const char* Section, const char* Key, tomlValue& Out); // value the Performance preset sets for this key, if active and listed
@@ -377,7 +382,9 @@ public:
 	int						GetSettingType(const char* Section, const char* Key); // Configuration::NodeType, or -1 if the setting doesn't exist
 	UInt32					SetSettingBatch(const std::vector<SettingChange>& Changes); // sets many values, one deferred reload (FlushPendingReload); returns how many were set
 	void					SetSetting(Configuration::ConfigNode* Node);
-	bool					IsPresetOverridden(const char* Section, const char* Key); // true while the Performance preset supplies this key's value (the menu shows it disabled)
+	void					SetPresetSetting(Configuration::ConfigNode* Node);	// edits the Performance preset's value for this key (marks unsaved)
+	void					RemovePresetSetting(const char* Section, const char* Key);	// back to the preset's default value (marks unsaved)
+	bool					IsPresetOverridden(const char* Section, const char* Key); // true while the Performance preset supplies this key's value (the menu shows a PRESET badge; the row stays editable)
 	void					Increment(const char* Section, const char* Key);
 	void					Decrement(const char* Section, const char* Key);
 	void					SetSettingWeather(const char* Section, const char* Key, float Value);

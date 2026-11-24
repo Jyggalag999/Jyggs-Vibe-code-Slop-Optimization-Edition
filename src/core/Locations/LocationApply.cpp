@@ -151,13 +151,59 @@ bool LocationManager::CanGoTo() {
 	return gConsole && gConsole->RunScriptLine;
 }
 
-bool LocationManager::IsWorldSpace(const char* asEditorId) {
-	if (!DataHandler) return false;
-	for (TList<TESWorldSpace>::Iterator Itr = DataHandler->worldSpaceList.Begin(); !Itr.End() && Itr.Get(); ++Itr) {
-		const char* name = Itr.Get()->GetEditorName();
-		if (name && !_stricmp(name, asEditorId)) return true;
+/*
+* Interior cells and worldspaces of the load order by editor ID, built once (the load order does not change at runtime).
+* The plugin is the file whose mod index is the top byte of the form ID ("?" for 0xFF / unknown indexes).
+*/
+void LocationManager::BuildInstalledIndex() {
+	InstalledBuilt = true;
+	if (!DataHandler) return;
+	auto timer = TimeLogger();
+
+	std::unordered_map<UInt8, std::string> plugins;
+	for (TList<ModInfo>::Iterator Itr = DataHandler->modList.modInfoList.Begin(); !Itr.End() && Itr.Get(); ++Itr) {
+		if (Itr.Get()->modIndex != 0xFF) plugins[Itr.Get()->modIndex] = Itr.Get()->name;
 	}
-	return false;
+	auto pluginOf = [&](TESForm* apForm) -> std::string {
+		auto it = plugins.find((UInt8)(apForm->refID >> 24));
+		return it != plugins.end() ? it->second : "?";
+	};
+
+	unsigned interiors = 0, worldspaces = 0;
+	NiTArray<TESObjectCELL*>& cells = DataHandler->cellArray;
+	for (UInt16 i = 0; i < cells.end && cells.data; i++) {
+		TESObjectCELL* cell = cells.data[i];
+		if (!cell || !cell->IsInterior()) continue;
+		const char* name = ((TESForm*)cell)->GetEditorName();
+		if (!name || !*name) continue;
+		InstalledInfo info;
+		info.Form = cell;
+		info.Plugin = pluginOf((TESForm*)cell);
+		if (Installed.emplace(Lower(name), info).second) interiors++;
+	}
+	for (TList<TESWorldSpace>::Iterator Itr = DataHandler->worldSpaceList.Begin(); !Itr.End() && Itr.Get(); ++Itr) {
+		TESForm* ws = (TESForm*)Itr.Get();
+		const char* name = ws->GetEditorName();
+		if (!name || !*name) continue;
+		InstalledInfo info;
+		info.Form = ws;
+		info.Worldspace = true;
+		info.Plugin = pluginOf(ws);
+		if (Installed.emplace(Lower(name), info).second) worldspaces++;
+	}
+	Logger::Log("[Locations] installed index: %u interiors, %u worldspaces, %u ms", interiors, worldspaces, (unsigned)timer.LogTime("LocationManager::InstalledIndex"));
+}
+
+const LocationManager::InstalledInfo* LocationManager::FindInstalled(const std::string& asEditorId) {
+	if (!EnsureInit()) return nullptr;
+	if (!InstalledBuilt) BuildInstalledIndex();
+	auto it = Installed.find(Lower(asEditorId));
+	return it != Installed.end() ? &it->second : nullptr;
+}
+
+bool LocationManager::IsWorldSpace(const char* asEditorId) {
+	const InstalledInfo* info = FindInstalled(asEditorId);
+	return info && info->Worldspace;
 }
 
 bool LocationManager::RequestGoTo(const std::string& asEditorId) {
@@ -171,6 +217,26 @@ bool LocationManager::RequestGoTo(const std::string& asEditorId) {
 	return true;
 }
 
+// A cell inside the worldspace to land in: the middle of its world map's usable area (cow 0 0 is often void or
+// empty in mod and DLC worldspaces), else the middle of its cell bounds, else 0,0.
+static const char* WorldspaceEntryCell(TESWorldSpace* ws, int& x, int& y) {
+	x = 0; y = 0;
+	if (!ws) return "no data, 0,0";
+	const TESWorldSpace::MapData& m = ws->mapData;
+	if (m.cellNWCoordinates.X != 0 || m.cellNWCoordinates.Y != 0 || m.cellSECoordinates.X != 0 || m.cellSECoordinates.Y != 0) {
+		x = ((int)m.cellNWCoordinates.X + (int)m.cellSECoordinates.X) / 2;
+		y = ((int)m.cellNWCoordinates.Y + (int)m.cellSECoordinates.Y) / 2;
+		return "middle of the map's usable area";
+	}
+	if (ws->min.X != 0.0f || ws->min.Y != 0.0f || ws->max.X != 0.0f || ws->max.Y != 0.0f) {
+		// NAM0/NAM9 are world units; a cell is 4096 units
+		x = (int)floorf((ws->min.X + ws->max.X) * 0.5f / 4096.0f);
+		y = (int)floorf((ws->min.Y + ws->max.Y) * 0.5f / 4096.0f);
+		return "middle of the cell bounds";
+	}
+	return "no data, 0,0";
+}
+
 void LocationManager::RunPendingGo() {
 	if (PendingGo.empty()) return;
 	if (!CanGoTo() || !Player || !Player->parentCell || !InterfaceManager || !InterfaceManager->IsActive(Menu::MenuType::kMenuType_None)) return;
@@ -179,10 +245,17 @@ void LocationManager::RunPendingGo() {
 	PendingGo.clear();
 	char cmd[512];
 	bool ok;
-	if (IsWorldSpace(id.c_str())) {
-		snprintf(cmd, sizeof(cmd), "cow %s 0 0", id.c_str());
+	const InstalledInfo* info = FindInstalled(id);
+	if (info) {	// known: pick the command directly
+		if (info->Worldspace) {
+			int x = 0, y = 0;
+			const char* from = WorldspaceEntryCell((TESWorldSpace*)info->Form, x, y);
+			Logger::Log("[Presets] worldspace '%s': entry cell %d,%d (%s)", id.c_str(), x, y, from);
+			snprintf(cmd, sizeof(cmd), "cow %s %d %d", id.c_str(), x, y);
+		}
+		else snprintf(cmd, sizeof(cmd), "coc %s", id.c_str());
 		ok = gConsole->RunScriptLine(cmd, nullptr);
-	} else {
+	} else {	// not in the index: coc, then cow
 		snprintf(cmd, sizeof(cmd), "coc %s", id.c_str());
 		ok = gConsole->RunScriptLine(cmd, nullptr);
 		if (!ok) {	// not a cell: try it as a worldspace
@@ -278,7 +351,6 @@ void LocationManager::OnDestination(TESObjectCELL* apCell) {
 }
 
 void LocationManager::Update() {
-	RunPendingGo();
 	if (!Active()) {
 		if (LightCell) RestoreLighting();
 		return;

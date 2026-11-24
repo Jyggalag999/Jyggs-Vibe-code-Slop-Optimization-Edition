@@ -139,8 +139,8 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     float gloss = 0.0f;
     float specExponent = 0.0f;
-    float3 baseColor = blendDiffuseMaps(IN.vertex_color, offsetUV, texCount, BaseMap, weights);
-    float3 combinedNormal = blendNormalMaps(offsetUV, texCount, NormalMap, weights, spec, gloss, specExponent);
+    float3 baseColor = blendDiffuseMaps(IN.vertex_color, offsetUV, dx, dy, texCount, BaseMap, weights);
+    float3 combinedNormal = blendNormalMaps(offsetUV, dx, dy, texCount, NormalMap, weights, spec, gloss, specExponent);
 
     float3 lightTS = mul(tbn, SunDir.xyz);
     float parallaxShadowMultiplier = getParallaxShadowMultipler(dist, offsetUV, dx, dy, lightTS, texCount, blends, heightStatus, BaseMap);

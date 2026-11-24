@@ -1,6 +1,7 @@
 #include "Menu/MenuBackend.h"
 #include "Menu/MenuInput.h"
 #include "Menu/MenuUI.h"
+#include "Menu/LocationsWindow.h"
 #include "../../lib/imgui/imgui.h"
 
 #define MenuSettings TheSettingManager->SettingsMain.Menu
@@ -89,8 +90,15 @@ void GameMenuManager::Render() {
 	}
 
 	if (!MenuBackend::BeginFrame(true)) return;
-	if (!wasDrawn) { MenuUI::OnOpened(); wasDrawn = true; }
-	MenuUI::Draw();
+	static Window drawnWindow = Window::Settings; // the window drawn last frame
+	if (!wasDrawn || drawnWindow != ActiveWindow) {
+		if (ActiveWindow == Window::Locations) LocationsWindow::OnOpened();
+		else MenuUI::OnOpened();
+		wasDrawn = true;
+		drawnWindow = ActiveWindow;
+	}
+	if (ActiveWindow == Window::Locations) LocationsWindow::Draw();
+	else MenuUI::Draw();
 	MenuBackend::EndFrame();
 	if (!Enabled) { wasDrawn = false; MenuInput::OnToggled(false); } // closed with Escape
 }

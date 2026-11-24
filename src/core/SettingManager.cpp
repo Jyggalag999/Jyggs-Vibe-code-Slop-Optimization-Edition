@@ -1,5 +1,6 @@
 #define TOML11_PRESERVE_COMMENTS_BY_DEFAULT
 #include "CellProfiler.h"
+#include "Occlusion/Occlusion.h"
 
 /*
 * The Config Class holds, accesses and maintains the current instance of config document and its keys.
@@ -35,7 +36,7 @@ void SettingManager::Configuration::Init() {
 		_snprintf_s(text, sizeof(text), _TRUNCATE,
 			"NewVegasReloaded.dll.defaults.toml could not be loaded.\n\n%s\n\n"
 			"It must be in Data\\NVSE\\Plugins, next to NewVegasReloaded.dll.\n"
-			"Reinstall Jyggs Vibe-code Slop (Optimization Edition): for a manual install, everything in the zip goes inside the Data folder.",
+			"Reinstall NVR Unofficial Jyggs Vibecoded Slop: for a manual install, everything in the zip goes inside the Data folder.",
 			e.what());
 		MessageBoxA(NULL, text, "New Vegas Reloaded", MB_OK | MB_ICONERROR);
 		ExitProcess(0);
@@ -90,7 +91,8 @@ bool SettingManager::Configuration::PresetActive() {
 /*
 * The preset overlay: while the preset is on, a key listed under _Preset.Performance.<Section> reads that value
 * (a user toml may override the preset's own values, same user-over-defaults rule as everywhere else).
-* Nothing here writes to TomlConfig, so Save never stores preset values.
+* Defaults are never written to TomlConfig by this; only SetPresetValue (an explicit edit in the menu) stores a
+* user override of a preset value, under _Preset.Performance.<Section>.
 */
 bool SettingManager::Configuration::PresetLookup(const char* Section, const char* Key, tomlValue& Out) {
 	if (!PresetActive()) return false;
@@ -220,7 +222,7 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 	// write the value in case it was obtained from defaults
 	if (fromDefault) SetValue(Node);
 
-	// Performance preset overlay (read only, after the write above so it never reaches TomlConfig)
+	// Performance preset overlay (read only, after the write above so the preset's default never reaches TomlConfig)
 	tomlValue presetValue;
 	if (PresetLookup(Section, Key, presetValue)) {
 		std::string pv;
@@ -384,6 +386,46 @@ void SettingManager::Configuration::SetValue(ConfigNode* Node) {
 }
 
 
+/*
+* Writes the user's override of a Performance preset value. Same type rules as SetValue; the section path is
+* "_Preset.Performance.<Section>" and must exist in the defaults (a preset key is only editable if the preset lists it).
+*/
+void SettingManager::Configuration::SetPresetValue(ConfigNode* Node) {
+	ValueCache.clear();
+	PresetState = -1;
+
+	const std::string path = std::string("_Preset.Performance.") + Node->Section;
+	StringList keys;
+	SplitString(path.c_str(), ".", &keys);
+	tomlValue* defaultSection = FindSection(&DefaultConfig, &keys);
+	if (!defaultSection || !defaultSection->is_table() || !defaultSection->contains(Node->Key)) return;
+
+	SplitString(path.c_str(), ".", &keys);
+	tomlValue* table = &TomlConfig;
+	for (const std::string& address : keys) {
+		if (!table->contains(address)) (*table)[address] = toml::table();
+		table = &table->at(address);
+	}
+
+	if (Node->Type == NodeType::Integer) (*table)[Node->Key] = atoi(Node->Value);
+	else if (Node->Type == NodeType::Float) (*table)[Node->Key] = (double)atof(Node->Value);
+	else if (Node->Type == NodeType::String) (*table)[Node->Key] = std::string(Node->Value);
+	else if (Node->Type == NodeType::Boolean) (*table)[Node->Key] = (bool)atoi(Node->Value);
+}
+
+bool SettingManager::Configuration::RemovePresetValue(const char* Section, const char* Key) {
+	ValueCache.clear();
+	PresetState = -1;
+
+	const std::string path = std::string("_Preset.Performance.") + Section;
+	StringList keys;
+	SplitString(path.c_str(), ".", &keys);
+	tomlValue* section = FindSection(&TomlConfig, &keys);
+	if (!section || !section->is_table()) return false;
+	return section->as_table().erase(Key) > 0;
+}
+
+
 void SettingManager::Configuration::CreateWeatherSection(const char* WeatherName, TESWeather* Weather) {
 	// TODO: replace with toml
 
@@ -498,6 +540,8 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.PartialShadowAtlasUpdate = GetSettingI("Main.Main.Performance", "PartialShadowAtlasUpdate");
 	SettingsMain.Main.SharedShadowWalk = GetSettingI("Main.Main.Performance", "SharedShadowWalk");
 	SettingsMain.Main.BatchScriptSettings = GetSettingI("Main.Main.Performance", "BatchScriptSettings");
+	SettingsMain.Main.HiddenObjectCulling = GetSettingI("Main.Main.Performance", "HiddenObjectCulling");
+	SettingsMain.Main.HiddenObjectCullingMaxAge = (UInt8)std::clamp(GetSettingI("Main.Main.Performance", "HiddenObjectCullingMaxAge"), 1, 7);
 
 	SettingsMain.FrameRate.SmartControl = GetSettingI("Main.FrameRate.SmartControl", "SmartControl");
 	SettingsMain.FrameRate.SmartControlFPS = GetSettingI("Main.FrameRate.SmartControl", "SmartControlFPS");
@@ -632,6 +676,7 @@ void SettingManager::LoadSettings() {
 
 	SettingsMain.Menu.KeyEnable = GetSettingI("Main.Menu.Keys", "KeyEnable");
 	SettingsMain.Menu.KeySave = GetSettingI("Main.Menu.Keys", "KeySave");
+	SettingsMain.Menu.KeyLocations = GetSettingI("Main.Menu.Keys", "KeyLocations");
 	{
 		// A user toml written before the black-and-blue style holds the old default accent and none of the new keys.
 		// Treat that as unset (the file is left alone until the user saves from the Style page).
@@ -786,6 +831,7 @@ void SettingManager::LoadSettings() {
 	}
 
 	SettingsChanged = true;
+	OcclusionBridge::OnSettingsLoaded();	// built-in occlusion culling: live settings (no-op until it is installed)
 	timer.LogTime("SettingsManager::LoadSettings");
 
 }
@@ -982,6 +1028,16 @@ void SettingManager::SetSetting(Configuration::ConfigNode* Node) {
 	hasUnsavedChanges = true;
 
 	Config.SetValue(Node);
+}
+
+void SettingManager::SetPresetSetting(Configuration::ConfigNode* Node) {
+	hasUnsavedChanges = true;
+
+	Config.SetPresetValue(Node);
+}
+
+void SettingManager::RemovePresetSetting(const char* Section, const char* Key) {
+	if (Config.RemovePresetValue(Section, Key)) hasUnsavedChanges = true;
 }
 
 /*

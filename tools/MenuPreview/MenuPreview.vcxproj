@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="16.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <ProjectGuid>{7C1E3B52-5D0A-4E7B-9A55-3D0F2A9B6C11}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>MenuPreview</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <!-- toml11 headers: the repo's lib\toml11 is a submodule that may be empty, so fall back to the stock NVR repo. -->
+    <TomlDir Condition="Exists('$(MSBuildThisFileDirectory)..\..\lib\toml11\toml.hpp')">$(MSBuildThisFileDirectory)..\..\lib\toml11</TomlDir>
+    <TomlDir Condition="'$(TomlDir)' == ''">F:\FNV DLL projects\NVR REPO\lib\toml11</TomlDir>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v142</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildThisFileDirectory)bin\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)obj\</IntDir>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory);$(MSBuildThisFileDirectory)..\..\lib\imgui;$(TomlDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ForcedIncludeFiles>$(MSBuildThisFileDirectory)PreviewFramework.h</ForcedIncludeFiles>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <ConformanceMode>false</ConformanceMode>
+      <DisableSpecificWarnings>4244;4267;4305;4996;4018;4838</DisableSpecificWarnings>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="MenuDataFake.cpp" />
+    <ClCompile Include="..\..\src\core\Menu\MenuUI.cpp" />
+    <ClCompile Include="..\..\src\core\Menu\PresetsPage.cpp" />
+    <ClCompile Include="..\..\src\core\Menu\LocationsWindow.cpp" />
+    <ClCompile Include="..\..\src\core\Menu\MenuWidgets.cpp" />
+    <ClCompile Include="..\..\src\core\Menu\MenuTheme.cpp" />
+    <ClCompile Include="..\..\src\core\Locations\LocationConfig.cpp" />
+    <ClCompile Include="..\..\src\core\Locations\IniDocument.cpp" />
+    <ClCompile Include="..\..\src\core\Locations\LocationResolver.cpp" />
+    <ClCompile Include="..\..\lib\imgui\imgui.cpp" />
+    <ClCompile Include="..\..\lib\imgui\imgui_draw.cpp" />
+    <ClCompile Include="..\..\lib\imgui\imgui_tables.cpp" />
+    <ClCompile Include="..\..\lib\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="..\..\lib\imgui\backends\imgui_impl_dx9.cpp" />
+    <ClCompile Include="..\..\lib\imgui\backends\imgui_impl_win32.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="PreviewFramework.h" />
+    <ClInclude Include="PreviewData.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -12,7 +12,10 @@ public:
 	void					UpdateSettings();
 	std::string				GetKeyName(int keyCode);
 
-	bool										Enabled;
+	enum class Window { Settings, Locations };
+
+	bool										Enabled; // a menu window is open (whichever ActiveWindow says)
+	Window										ActiveWindow = Window::Settings;
 	std::chrono::system_clock::time_point		MainMenuStartTime;
 	bool										MainMenuOn;
 

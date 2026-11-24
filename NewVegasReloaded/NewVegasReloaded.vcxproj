@@ -158,8 +158,15 @@
     <ClCompile Include="..\src\core\Menu\MenuInput.cpp" />
     <ClCompile Include="..\src\core\Menu\MenuTheme.cpp" />
     <ClCompile Include="..\src\core\Menu\MenuUI.cpp" />
+    <ClCompile Include="..\src\core\Menu\MenuWidgets.cpp" />
+    <ClCompile Include="..\src\core\Menu\MenuDataGame.cpp" />
     <ClCompile Include="..\src\core\Menu\PresetsPage.cpp" />
+    <ClCompile Include="..\src\core\Menu\LocationsWindow.cpp" />
     <ClCompile Include="..\src\core\GpuProfiler.cpp" />
+    <ClCompile Include="..\src\core\Occlusion\Occlusion.cpp">
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="..\src\core\Occlusion\OcclusionBridge.cpp" />
     <ClCompile Include="..\src\core\Locations\LocationApply.cpp" />
     <ClCompile Include="..\src\core\Locations\LocationConfig.cpp" />
     <ClCompile Include="..\src\core\Locations\IniDocument.cpp" />
@@ -248,10 +255,17 @@
     <ClInclude Include="..\src\core\Menu\MenuInput.h" />
     <ClInclude Include="..\src\core\Menu\MenuTheme.h" />
     <ClInclude Include="..\src\core\Menu\MenuUI.h" />
+    <ClInclude Include="..\src\core\Menu\MenuWidgets.h" />
+    <ClInclude Include="..\src\core\Menu\MenuData.h" />
     <ClInclude Include="..\src\core\Menu\PresetsPage.h" />
+    <ClInclude Include="..\src\core\Menu\LocationsWindow.h" />
     <ClInclude Include="..\src\core\Menu\Fonts.h" />
     <ClInclude Include="..\src\core\GpuProfiler.h" />
+    <ClInclude Include="..\src\core\Occlusion\Occlusion.h" />
+    <ClInclude Include="..\src\core\Occlusion\OcclusionMath.h" />
+    <ClInclude Include="..\src\core\Occlusion\Scheduler.h" />
     <ClInclude Include="..\src\core\Locations\LocationApply.h" />
+    <ClInclude Include="..\src\core\Locations\LocationStatus.h" />
     <ClInclude Include="..\src\core\Locations\LocationConfig.h" />
     <ClInclude Include="..\src\core\Locations\IniDocument.h" />
     <ClInclude Include="..\src\core\Locations\LocationResolver.h" />

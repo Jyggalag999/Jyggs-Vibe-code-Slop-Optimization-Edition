@@ -58,6 +58,9 @@ public:
 		float MaxDistance;
 		float Height;
 		float ShadowsIntensity;
+		bool IsoHeightTaps;		// [_Main.Main.Performance] (Vegas Shaders port): isotropic gradients for the height taps
+		bool SkipEmptyLayers;	// same: skip land layers whose weight is exactly 0
+		bool Lite;				// same: ParallaxLite
 	};
 	struct LODSettingsStruct {
 		float NoiseScale;
@@ -84,6 +87,7 @@ public:
 		D3DXVECTOR4     ExtraData;
 	};
 	ParallaxStruct  ParallaxConstants;
+	D3DXVECTOR4		ParallaxIso;	// TESR_TerrainParallaxIso: x IsoHeightTaps, y SkipEmptyLayers
 
 	bool			usePBR;
 

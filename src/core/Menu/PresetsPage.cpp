@@ -1,9 +1,9 @@
 #include "PresetsPage.h"
 #include "MenuBackend.h"
 #include "MenuTheme.h"
-#include "../Locations/LocationApply.h"
+#include "MenuData.h"
+#include "MenuWidgets.h"
 #include "../Locations/IniDocument.h"
-#include "../GameMenuManager.h"
 #include "../../../lib/imgui/imgui.h"
 #include <map>
 #include <set>
@@ -14,6 +14,8 @@
 #undef max
 
 using namespace Locations;
+using MenuWidgets::Tip;
+using MenuWidgets::Muted;
 
 namespace {
 	struct OpenFile {
@@ -35,6 +37,8 @@ namespace {
 	Selection						gSel;
 	int								gFeature = 0;
 	char							gFilter[64] = {};
+	char							gUseFilter[64] = {};	// "where it is used" list filter
+	bool							gShowMissing = false;	// show locations not in the load order
 	std::string						gStatus;
 	bool							gStatusError = false;
 	char							gNewName[64] = {};
@@ -66,16 +70,6 @@ namespace {
 
 	float Btn() { return 84.0f * MenuBackend::Scale(); }	// common button width
 
-	void Tip(const char* text) {
-		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", text);
-	}
-
-	void Muted(const char* text) {
-		ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
-		ImGui::TextWrapped("%s", text);
-		ImGui::PopStyleColor();
-	}
-
 	std::string FileName(const std::string& p) {
 		size_t s = p.find_last_of("\\/");
 		return s == std::string::npos ? p : p.substr(s + 1);
@@ -90,7 +84,7 @@ namespace {
 	}
 
 	void ReloadConfig() {
-		TheLocationManager->Reload();
+		Data().LocReload();
 	}
 
 	void SaveFile(OpenFile& f) {
@@ -147,7 +141,7 @@ namespace {
 
 	// Adds the preset to the current location's [Overrides] line in the feature ini.
 	void AddToCurrentLocation(const LocationConfig& cfg, int f, const std::string& preset) {
-		const LocationStatus& st = TheLocationManager->GetStatus();
+		const LocationStatus& st = Data().LocStatus();
 		if (st.Target.empty()) { SetStatus("No current location.", true); return; }
 		const FeatureConfig& fc = cfg.Features[f];
 		OpenFile& file = Open(fc.IniPath);
@@ -185,7 +179,24 @@ namespace {
 		SetStatus("Added " + preset + " to [Overrides] " + st.Target + " in " + fc.IniName + ". Save it to apply.", false);
 	}
 
-	/* ------------------------------------------------------------ panes */
+	/* ------------------------------------------------------------ layout state */
+
+	float		gLeftUnits = 300.0f;		// left pane width at 1080p (the splitter changes it)
+	int			gSubTab = 0;				// right pane: 0 = Values, 1 = Used by
+	std::string	gAddKeyIn;					// lowercase section whose "Add key" row is open
+	bool		gAddSectionOpen = false;
+
+	ImVec2 DisplayCenter() {
+		const ImVec2 d = ImGui::GetIO().DisplaySize;
+		return ImVec2(d.x * 0.5f, d.y * 0.5f);
+	}
+
+	// A table cell with one line of text, cut with "..." (full text as tooltip when cut).
+	void CellText(const std::string& text) {
+		if (MenuWidgets::Ellipsized(text)) Tip(text);
+	}
+
+	/* ------------------------------------------------------------ left pane */
 
 	void DrawFileLink(const std::string& label, const std::string& path, int feature, const std::string& preset, const char* tag) {
 		const bool sel = Lower(gSel.path) == Lower(path);
@@ -196,43 +207,99 @@ namespace {
 		if (ImGui::Selectable((text + "##f" + path).c_str(), sel)) Select(path, label, feature, preset);
 	}
 
-	void DrawLeft(const LocationConfig& cfg) {
-		const LocationStatus& st = TheLocationManager->GetStatus();
+	// One selectable row per preset type with the preset count on the right. Types that do nothing are muted
+	// and say why in a tooltip.
+	void DrawFeatureList(const LocationConfig& cfg) {
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float pad = style.FramePadding.x + 2.0f;
+		for (int f = 0; f < FeatureCount; f++) {
+			const FeatureConfig& fc = cfg.Features[f];
+			const bool act = fc.Active();
+			ImGui::PushID(f);
+			const float x0 = ImGui::GetCursorPosX();
+			const float rowW = ImGui::GetContentRegionAvail().x;
+			ImGui::SetNextItemAllowOverlap();
+			if (ImGui::Selectable("##feat", gFeature == f, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetFrameHeight()))) gFeature = f;
+			if (!act) Tip(!fc.SwitchOn ? std::string(fc.Name) + " is switched off in Settings.ini (" + fc.SwitchKey + ")."
+				: std::string(fc.IniName) + " is missing, so " + fc.Name + " does nothing.");
+			const ImVec2 after = ImGui::GetCursorPos();
+			ImGui::SameLine(x0 + pad);
+			ImGui::AlignTextToFramePadding();
+			if (!act) ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
+			ImGui::TextUnformatted(fc.Name);
+			if (!act) ImGui::PopStyleColor();
+			char count[24];
+			snprintf(count, sizeof(count), "%d", act ? (int)fc.Presets.size() : 0);
+			ImGui::SameLine(x0 + rowW - ImGui::CalcTextSize(count).x - pad);
+			ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
+			ImGui::TextUnformatted(count);
+			ImGui::PopStyleColor();
+			ImGui::SetCursorPos(after);
+			ImGui::PopID();
+		}
+	}
 
-		if (!st.Target.empty() && ImGui::CollapsingHeader("Files in use here")) {
-			Muted(("Everything that decides the presets of " + st.Target).c_str());
-			DrawFileLink("Settings.ini", cfg.SettingsPath, -1, "", "");
-			for (int f = 0; f < FeatureCount; f++) {
-				const FeatureConfig& fc = cfg.Features[f];
-				const Resolution& r = st.Features[f];
-				if (!fc.Active() || !r.valid) continue;
-				DrawFileLink(fc.IniName, fc.IniPath, f, "", fc.Name);
-				for (size_t i = 0; i < r.stack.size(); i++) {
-					auto p = fc.Presets.find(Lower(r.stack[i]));
-					if (p == fc.Presets.end()) continue;
-					DrawFileLink(std::string(fc.PresetFolder) + "\\" + FileName(p->second.path), p->second.path, f, p->second.name, i == 0 ? "default" : "");
-				}
+	void DrawModals(const LocationConfig& cfg, const std::vector<const Preset*>& list) {
+		const float s = MenuBackend::Scale();
+		const FeatureConfig& fc = cfg.Features[gFeature];
+
+		if (gOpenNew) { ImGui::OpenPopup("New preset"); gOpenNew = false; }
+		ImGui::SetNextWindowPos(DisplayCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(420.0f * s, 0.0f), ImGuiCond_Always);
+		if (ImGui::BeginPopupModal("New preset", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) {
+			ImGui::Text("New %s preset", fc.Name);
+			ImGui::TextUnformatted("Name");
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+			const bool enter = ImGui::InputText("##name", gNewName, sizeof(gNewName), ImGuiInputTextFlags_EnterReturnsTrue);
+			ImGui::TextUnformatted("Copy from");
+			std::string cur = gNewFrom <= 0 || gNewFrom > (int)list.size() ? "(empty)" : list[gNewFrom - 1]->name;
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			if (ImGui::BeginCombo("##from", cur.c_str())) {
+				if (ImGui::Selectable("(empty)", gNewFrom == 0)) gNewFrom = 0;
+				for (size_t i = 0; i < list.size(); i++) if (ImGui::Selectable(list[i]->name.c_str(), gNewFrom == (int)i + 1)) gNewFrom = (int)i + 1;
+				ImGui::EndCombo();
 			}
-			std::vector<std::string> kf = cfg.KeywordFilesFor(st.Target);
-			for (const std::string& k : kf) {
-				ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
-				ImGui::Text("KEYWORDS\\%s  (read only)", k.c_str());
-				ImGui::PopStyleColor();
-			}
+			const bool valid = ValidName(gNewName) && !cfg.PresetExists((Feature)gFeature, gNewName);
+			if (*gNewName && !valid) Muted("Use letters, digits, space, _ - . and a name that is not taken.");
 			ImGui::Spacing();
+			const char* labels[2] = { "Create", "Cancel" };
+			const bool enabled[2] = { valid, true };
+			const int clicked = MenuWidgets::ToolbarButtons(labels, 2, enabled, 0);
+			if ((clicked == 0 || (enter && valid))) {
+				CreatePreset(cfg, gFeature, gNewName, gNewFrom > 0 ? list[gNewFrom - 1] : nullptr);
+				ImGui::CloseCurrentPopup();
+			}
+			else if (clicked == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
 		}
 
-		ImGui::SetNextItemWidth(-1);
-		if (ImGui::BeginCombo("##feature", cfg.Features[gFeature].Name)) {
-			for (int f = 0; f < FeatureCount; f++) {
-				const bool act = cfg.Features[f].Active();
-				if (!act) ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
-				if (ImGui::Selectable(cfg.Features[f].Name, gFeature == f)) gFeature = f;
-				if (!act) ImGui::PopStyleColor();
+		if (gOpenDelete) { ImGui::OpenPopup("Delete preset"); gOpenDelete = false; }
+		ImGui::SetNextWindowPos(DisplayCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(420.0f * s, 0.0f), ImGuiCond_Always);
+		if (ImGui::BeginPopupModal("Delete preset", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) {
+			ImGui::TextWrapped("Delete %s?", gSel.preset.c_str());
+			Muted("The file is renamed to .nvrdeleted, not erased. Locations that name it fall back to their other presets.");
+			ImGui::Spacing();
+			const char* labels[2] = { "Delete", "Cancel" };
+			const int clicked = MenuWidgets::ToolbarButtons(labels, 2, nullptr, 0);
+			if (clicked == 0 || ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
+				auto it = fc.Presets.find(Lower(gSel.preset));
+				if (it != fc.Presets.end()) { Preset copy = it->second; DeletePreset(cfg, gFeature, copy); }
+				ImGui::CloseCurrentPopup();
 			}
-			ImGui::EndCombo();
+			else if (clicked == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
 		}
-		Tip("Which kind of preset to list.");
+	}
+
+	void DrawLeft(const LocationConfig& cfg) {
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float pad = style.FramePadding.x + 2.0f;
+
+		MenuWidgets::PageHeader("Preset types");
+		DrawFeatureList(cfg);
+		ImGui::Separator();
 
 		const FeatureConfig& fc = cfg.Features[gFeature];
 		if (!fc.Active()) {
@@ -244,253 +311,381 @@ namespace {
 
 		DrawFileLink(fc.IniName, fc.IniPath, gFeature, "", "feature file");
 
-		ImGui::SetNextItemWidth(-1);
+		ImGui::SetNextItemWidth(-FLT_MIN);
 		ImGui::InputTextWithHint("##filter", "Filter presets", gFilter, sizeof(gFilter));
 		Tip("Type part of a preset name. [n] = place in this location's stack, later wins.");
-		std::string filter = Lower(gFilter);
+		const std::string filter = Lower(gFilter);
 
-		const Resolution& r = st.Features[gFeature];
+		const Resolution& r = Data().LocStatus().Features[gFeature];
 		std::vector<const Preset*> list;
 		for (const auto& kv : fc.Presets) list.push_back(&kv.second);
 		std::sort(list.begin(), list.end(), [](const Preset* a, const Preset* b) { return Lower(a->name) < Lower(b->name); });
 
-		const float footer = ImGui::GetFrameHeightWithSpacing();
-		ImGui::BeginChild("##plist", ImVec2(0, -footer), ImGuiChildFlags_Borders);
+		ImGui::BeginChild("##plist", ImVec2(0, -(ImGui::GetFrameHeight() + style.ItemSpacing.y)), ImGuiChildFlags_Borders);
+		const float badgeW = MenuWidgets::BadgeWidth("default");
 		for (const Preset* p : list) {
-			std::string pl = Lower(p->name);
+			const std::string pl = Lower(p->name);
 			if (!filter.empty() && pl.find(filter) == std::string::npos) continue;
-			std::string text = p->name;
 			int order = -1;
 			for (size_t i = 0; i < r.stack.size(); i++) if (Lower(r.stack[i]) == pl) order = (int)i + 1;
+			std::string text = p->name;
 			if (order > 0) text = "[" + std::to_string(order) + "] " + text;
 			auto it = gOpen.find(Lower(p->path));
 			if (it != gOpen.end() && it->second.Dirty()) text += " *";
+			const bool isDefault = !r.defaultPreset.empty() && Lower(r.defaultPreset) == pl;
 			const bool sel = Lower(gSel.path) == Lower(p->path);
+
+			ImGui::PushID(p->name.c_str());
+			const float x0 = ImGui::GetCursorPosX();
+			const float rowW = ImGui::GetContentRegionAvail().x;
+			ImGui::SetNextItemAllowOverlap();
+			if (ImGui::Selectable("##p", sel, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetFrameHeight()))) Select(p->path, p->name, gFeature, p->name);
+			const ImVec2 after = ImGui::GetCursorPos();
+			ImGui::SameLine(x0 + pad);
+			ImGui::AlignTextToFramePadding();
 			if (order > 0) ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Accent());
-			if (ImGui::Selectable((text + "##p" + p->name).c_str(), sel)) Select(p->path, p->name, gFeature, p->name);
+			if (MenuWidgets::Ellipsized(text, rowW - pad * 2.0f - (isDefault ? badgeW + style.ItemSpacing.x : 0.0f))) Tip(text);
 			if (order > 0) ImGui::PopStyleColor();
-			if (!r.defaultPreset.empty() && Lower(r.defaultPreset) == pl) { ImGui::SameLine(); Muted("default"); }
+			if (isDefault) {
+				ImGui::SameLine(x0 + rowW - badgeW - pad);
+				MenuWidgets::Badge("default");
+			}
+			ImGui::SetCursorPos(after);
+			ImGui::PopID();
 		}
 		ImGui::EndChild();
 
-		if (ImGui::Button("New", ImVec2(Btn(), 0))) { gNewName[0] = 0; gNewFrom = 0; gOpenNew = true; }
-		Tip("Create a new preset, empty or as a copy of an existing one.");
-		ImGui::SameLine();
 		const bool havePreset = !gSel.preset.empty() && gSel.feature == gFeature;
-		if (!havePreset) ImGui::BeginDisabled();
-		if (ImGui::Button("Duplicate", ImVec2(Btn(), 0))) {
+		const char* labels[3] = { "New", "Duplicate", "Delete" };
+		const bool enabled[3] = { true, havePreset, havePreset };
+		switch (MenuWidgets::ToolbarButtons(labels, 3, enabled)) {
+		case 0: gNewName[0] = 0; gNewFrom = 0; gOpenNew = true; break;
+		case 1: {
 			std::string name = gSel.preset + " copy";
 			for (int n = 2; cfg.PresetExists((Feature)gFeature, name); n++) name = gSel.preset + " copy " + std::to_string(n);
 			auto it = fc.Presets.find(Lower(gSel.preset));
 			if (it != fc.Presets.end()) CreatePreset(cfg, gFeature, name, &it->second);
+			break;
 		}
-		Tip("Copy the selected preset under a new name.");
-		ImGui::SameLine();
-		if (ImGui::Button("Delete", ImVec2(Btn(), 0))) gOpenDelete = true;
-		Tip("Rename the selected preset's file to .nvrdeleted (asks first).");
-		if (!havePreset) ImGui::EndDisabled();
-
-		if (gOpenNew) { ImGui::OpenPopup("New preset"); gOpenNew = false; }
-		if (ImGui::BeginPopupModal("New preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-			ImGui::Text("New %s preset", fc.Name);
-			ImGui::InputText("Name", gNewName, sizeof(gNewName));
-			std::vector<const Preset*> froms = list;
-			std::string cur = gNewFrom <= 0 || gNewFrom > (int)froms.size() ? "(empty)" : froms[gNewFrom - 1]->name;
-			if (ImGui::BeginCombo("Copy from", cur.c_str())) {
-				if (ImGui::Selectable("(empty)", gNewFrom == 0)) gNewFrom = 0;
-				for (size_t i = 0; i < froms.size(); i++) if (ImGui::Selectable(froms[i]->name.c_str(), gNewFrom == (int)i + 1)) gNewFrom = (int)i + 1;
-				ImGui::EndCombo();
-			}
-			const bool valid = ValidName(gNewName) && !cfg.PresetExists((Feature)gFeature, gNewName);
-			if (*gNewName && !valid) Muted("Use letters, digits, space, _ - . and a name that is not taken.");
-			if (!valid) ImGui::BeginDisabled();
-			if (ImGui::Button("Create", ImVec2(Btn(), 0))) {
-				CreatePreset(cfg, gFeature, gNewName, gNewFrom > 0 ? froms[gNewFrom - 1] : nullptr);
-				ImGui::CloseCurrentPopup();
-			}
-			if (!valid) ImGui::EndDisabled();
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(Btn(), 0))) ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
+		case 2: gOpenDelete = true; break;
 		}
-		if (gOpenDelete) { ImGui::OpenPopup("Delete preset"); gOpenDelete = false; }
-		if (ImGui::BeginPopupModal("Delete preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-			ImGui::Text("Delete %s?", gSel.preset.c_str());
-			Muted("The file is renamed to .nvrdeleted, not erased. Locations that name it fall back to their other presets.");
-			if (ImGui::Button("Delete", ImVec2(Btn(), 0))) {
-				auto it = fc.Presets.find(Lower(gSel.preset));
-				if (it != fc.Presets.end()) { Preset copy = it->second; DeletePreset(cfg, gFeature, copy); }
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(Btn(), 0))) ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-		}
+		DrawModals(cfg, list);
 	}
 
-	void DrawMiddle(const LocationConfig& cfg) {
-		if (gSel.path.empty()) { Muted("Pick a preset or a file on the left."); return; }
-		OpenFile& f = Open(gSel.path);
+	/* ------------------------------------------------------------ right pane: values */
 
-		ImGui::PushFont(MenuBackend::FontSemiBold());
-		ImGui::TextUnformatted(gSel.label.c_str());
-		ImGui::PopFont();
-		Muted(f.path.c_str());
-		Tip("Edits go to the mod that provides the file; new files go to MO2's overwrite folder.");
-		if (f.missing) ImGui::TextColored(MenuTheme::Warning(), "The file does not exist (Save creates it).");
-
-		const bool dirty = f.Dirty();
-		if (!dirty) ImGui::BeginDisabled();
-		ImGui::PushStyleColor(ImGuiCol_Button, MenuTheme::AccentDim());
-		if (ImGui::Button("Save", ImVec2(Btn(), 0))) SaveFile(f);
-		ImGui::PopStyleColor();
-		Tip("Write this file, then reload the presets so the change shows in the current location.");
-		ImGui::SameLine();
-		if (ImGui::Button("Revert", ImVec2(Btn(), 0))) RevertFile(f);
-		Tip("Throw away unsaved edits to this file.");
-		if (!dirty) ImGui::EndDisabled();
-		if (dirty) { ImGui::SameLine(); ImGui::TextColored(MenuTheme::Warning(), "Unsaved changes"); }
-		if (!gStatus.empty()) {
-			if (gStatusError) ImGui::TextColored(MenuTheme::Warning(), "%s", gStatus.c_str()); else Muted(gStatus.c_str());
-		}
-
-		const bool nvr = gSel.feature == FeatureNVR && !gSel.preset.empty();
-		const int cols = nvr ? 4 : 3;
-		ImGui::BeginChild("##rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * (gAddOpen ? 2.0f : 1.0f)), ImGuiChildFlags_Borders);
-		if (ImGui::BeginTable("##ini", cols + 1, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY)) {
-			ImGui::TableSetupScrollFreeze(0, 1);
-			ImGui::TableSetupColumn("Section", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-			ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthStretch, 1.5f);
-			ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.5f);
-			if (nvr) ImGui::TableSetupColumn("Live", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-			ImGui::TableSetupColumn("##x", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFrameHeight());
-			ImGui::TableHeadersRow();
-			std::vector<IniDocument::Item> items = f.doc.Items();
-			std::set<std::string> seen;
-			int row = 0;
-			std::string removeSec, removeKey, lastSec; bool doRemove = false;
-			for (const IniDocument::Item& it : items) {
-				const bool dup = !seen.insert(Lower(it.section) + "\n" + Lower(it.key)).second;
-				const std::string* o = f.orig.Get(it.section, it.key);
-				const bool changed = !dup && (!o || *o != it.value);
-				ImGui::PushID(row++);
-				ImGui::TableNextRow();
-				if (changed) ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(MenuTheme::AccentDim()));
-				ImGui::TableNextColumn();
-				if (Lower(it.section) != lastSec) { ImGui::TextColored(MenuTheme::Accent(), "%s", it.section.c_str()); lastSec = Lower(it.section); }
-				ImGui::TableNextColumn(); ImGui::TextUnformatted(it.key.c_str());
-				ImGui::TableNextColumn();
-				if (dup) {
-					Muted(("ignored duplicate: " + it.value).c_str());
-				} else {
-					char buf[256];
-					strncpy_s(buf, it.value.c_str(), _TRUNCATE);
-					ImGui::SetNextItemWidth(-1);
-					if (ImGui::InputText("##v", buf, sizeof(buf))) f.doc.Set(it.section, it.key, buf);
-				}
-				if (nvr) {
-					ImGui::TableNextColumn();
-					int type = TheSettingManager->GetSettingType(it.section.c_str(), it.key.c_str());
-					if (type < 0) { Muted("not an NVR setting"); }
-					else {
-						float live = TheSettingManager->GetSettingF(it.section.c_str(), it.key.c_str());
-						if (type == SettingManager::Configuration::NodeType::Boolean) ImGui::TextUnformatted(live != 0.0f ? "true" : "false");
-						else if (type == SettingManager::Configuration::NodeType::Integer) ImGui::Text("%d", (int)live);
-						else if (type == SettingManager::Configuration::NodeType::Float) ImGui::Text("%g", live);
-						else Muted("text");
-					}
-				}
-				ImGui::TableNextColumn();
-				if (ImGui::SmallButton("x")) { doRemove = true; removeSec = it.section; removeKey = it.key; }
-				Tip("Remove this key from the file.");
-				ImGui::PopID();
-			}
-			ImGui::EndTable();
-			if (doRemove) f.doc.Remove(removeSec, removeKey);
-		}
-		ImGui::EndChild();
-
-		if (ImGui::Button(gAddOpen ? "Hide add key" : "Add key...", ImVec2(Btn() * 1.3f, 0))) gAddOpen = !gAddOpen;
-		if (gAddOpen) {
-			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.3f);
-			ImGui::InputTextWithHint("##as", "section", gAddSection, sizeof(gAddSection));
-			ImGui::SameLine(); ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.35f);
-			ImGui::InputTextWithHint("##ak", "key", gAddKey, sizeof(gAddKey));
-			ImGui::SameLine(); ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
-			ImGui::InputTextWithHint("##av", "value", gAddValue, sizeof(gAddValue));
-			ImGui::SameLine();
-			const bool canAdd = gAddSection[0] && gAddKey[0];
-			if (!canAdd) ImGui::BeginDisabled();
-			if (ImGui::Button("Add", ImVec2(Btn(), 0))) { f.doc.Set(gAddSection, gAddKey, gAddValue); gAddKey[0] = gAddValue[0] = 0; }
-			if (!canAdd) ImGui::EndDisabled();
-		}
-		(void)cfg;
-	}
-
-	void DrawRight(const LocationConfig& cfg) {
-		const LocationStatus& st = TheLocationManager->GetStatus();
-		ImGui::PushFont(MenuBackend::FontSemiBold());
-		ImGui::TextUnformatted("Where it is used");
-		ImGui::PopFont();
-
-		if (gSel.preset.empty() || gSel.feature < 0) {
-			Muted("Select a preset to see the locations that use it.");
+	void DrawLiveCell(const IniDocument::Item& it) {
+		const int type = Data().SettingType(it.section.c_str(), it.key.c_str());
+		if (type < 0) {
+			ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
+			ImGui::TextUnformatted("-");
+			ImGui::PopStyleColor();
+			Tip("Not an NVR setting.");
 			return;
 		}
+		const float live = Data().SettingF(it.section.c_str(), it.key.c_str());
+		if (type == MenuNodeType::Boolean) ImGui::TextUnformatted(live != 0.0f ? "true" : "false");
+		else if (type == MenuNodeType::Integer) ImGui::Text("%d", (int)live);
+		else if (type == MenuNodeType::Float) ImGui::Text("%g", live);
+		else Muted("text");
+	}
+
+	void DrawValues(OpenFile& f) {
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float s = MenuBackend::Scale();
+		const bool nvr = gSel.feature == FeatureNVR && !gSel.preset.empty();
+
+		// Keys grouped by section, in file order.
+		std::vector<IniDocument::Item> items = f.doc.Items();
+		std::vector<std::string> order;
+		std::map<std::string, std::vector<size_t>> bySection;
+		for (size_t i = 0; i < items.size(); i++) {
+			const std::string k = Lower(items[i].section);
+			if (!bySection.count(k)) order.push_back(k);
+			bySection[k].push_back(i);
+		}
+		for (const std::string& sec : f.doc.Sections()) {	// sections without keys still get a group
+			if (!bySection.count(Lower(sec))) { bySection[Lower(sec)]; order.push_back(Lower(sec)); }
+		}
+
+		ImGui::BeginChild("##vals", ImVec2(0, 0), ImGuiChildFlags_None);
+		if (order.empty()) Muted("The file has no keys yet. Add a section below.");
+
+		std::set<std::string> seen;
+		std::string removeSec, removeKey;
+		bool doRemove = false;
+		const float total = ImGui::GetContentRegionAvail().x;
+		for (const std::string& lowSec : order) {
+			const std::vector<size_t>& idx = bySection[lowSec];
+			std::string secName = lowSec;
+			for (const IniDocument::Item& it : items) if (Lower(it.section) == lowSec) { secName = it.section; break; }
+			if (idx.empty()) for (const std::string& n : f.doc.Sections()) if (Lower(n) == lowSec) { secName = n; break; }
+
+			ImGui::PushID(lowSec.c_str());
+			ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+			ImGui::PushFont(MenuBackend::FontSemiBold());
+			const bool open = ImGui::CollapsingHeader((secName + "  (" + std::to_string(idx.size()) + ")###sec").c_str());
+			ImGui::PopFont();
+			if (open) {
+				float keyW = 0.0f;
+				for (size_t i : idx) keyW = std::max(keyW, ImGui::CalcTextSize(items[i].key.c_str()).x);
+				keyW = std::min(std::max(keyW + style.CellPadding.x * 2.0f + 8.0f * s, total * 0.22f), total * 0.40f);
+				const float liveW = 96.0f * s;
+				if (!idx.empty() && ImGui::BeginTable("##ini", nvr ? 4 : 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX)) {
+					ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, keyW);
+					ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+					if (nvr) ImGui::TableSetupColumn("Live", ImGuiTableColumnFlags_WidthFixed, liveW);
+					ImGui::TableSetupColumn("##x", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFrameHeight() + 4.0f);
+					if (nvr) ImGui::TableHeadersRow();
+					for (size_t i : idx) {
+						const IniDocument::Item& it = items[i];
+						const bool dup = !seen.insert(lowSec + "\n" + Lower(it.key)).second;
+						const std::string* o = f.orig.Get(it.section, it.key);
+						const bool changed = !dup && (!o || *o != it.value);
+						ImGui::PushID((int)i);
+						ImGui::TableNextRow();
+						if (changed) ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(MenuTheme::AccentDim()));
+						ImGui::TableNextColumn();
+						ImGui::AlignTextToFramePadding();
+						CellText(it.key);
+						ImGui::TableNextColumn();
+						if (dup) {
+							Muted(("ignored duplicate: " + it.value).c_str());
+						} else {
+							char buf[256];
+							strncpy_s(buf, it.value.c_str(), _TRUNCATE);
+							ImGui::SetNextItemWidth(-FLT_MIN);
+							if (ImGui::InputText("##v", buf, sizeof(buf))) f.doc.Set(it.section, it.key, buf);
+						}
+						if (nvr) { ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); DrawLiveCell(it); }
+						ImGui::TableNextColumn();
+						if (ImGui::Button("x", ImVec2(ImGui::GetFrameHeight(), 0))) { doRemove = true; removeSec = it.section; removeKey = it.key; }
+						Tip("Remove this key from the file.");
+						ImGui::PopID();
+					}
+					ImGui::EndTable();
+				}
+
+				// Add key row for this section
+				if (gAddKeyIn == lowSec) {
+					const float avail = ImGui::GetContentRegionAvail().x;
+					const float bw = ImGui::CalcTextSize("Cancel").x + style.FramePadding.x * 2.0f;
+					const float keyIn = std::max(80.0f * s, avail * 0.30f);
+					ImGui::SetNextItemWidth(keyIn);
+					ImGui::InputTextWithHint("##ak", "key", gAddKey, sizeof(gAddKey));
+					ImGui::SameLine();
+					ImGui::SetNextItemWidth(std::max(60.0f * s, avail - keyIn - bw * 2.0f - style.ItemSpacing.x * 3.0f));
+					const bool enter = ImGui::InputTextWithHint("##av", "value", gAddValue, sizeof(gAddValue), ImGuiInputTextFlags_EnterReturnsTrue);
+					ImGui::SameLine();
+					const bool canAdd = gAddKey[0] != 0;
+					ImGui::BeginDisabled(!canAdd);
+					if (ImGui::Button("Add", ImVec2(bw, 0)) || (enter && canAdd)) { f.doc.Set(secName, gAddKey, gAddValue); gAddKey[0] = gAddValue[0] = 0; }
+					ImGui::EndDisabled();
+					ImGui::SameLine();
+					if (ImGui::Button("Cancel", ImVec2(bw, 0))) gAddKeyIn.clear();
+				}
+				else if (ImGui::SmallButton("Add key...")) { gAddKeyIn = lowSec; gAddKey[0] = gAddValue[0] = 0; gAddSectionOpen = false; }
+				ImGui::Spacing();
+			}
+			ImGui::PopID();
+		}
+		if (doRemove) f.doc.Remove(removeSec, removeKey);
+
+		// Add section row
+		ImGui::Separator();
+		if (!gAddSectionOpen) {
+			if (ImGui::Button("Add section...")) { gAddSectionOpen = true; gAddKeyIn.clear(); gAddSection[0] = gAddKey[0] = gAddValue[0] = 0; }
+		}
+		else {
+			const float avail = ImGui::GetContentRegionAvail().x;
+			const float bw = ImGui::CalcTextSize("Cancel").x + style.FramePadding.x * 2.0f;
+			const float w3 = std::max(60.0f * s, (avail - bw * 2.0f - style.ItemSpacing.x * 4.0f) / 3.0f);
+			ImGui::SetNextItemWidth(w3);
+			ImGui::InputTextWithHint("##as", "section", gAddSection, sizeof(gAddSection));
+			ImGui::SameLine(); ImGui::SetNextItemWidth(w3);
+			ImGui::InputTextWithHint("##ak2", "key", gAddKey, sizeof(gAddKey));
+			ImGui::SameLine(); ImGui::SetNextItemWidth(w3);
+			ImGui::InputTextWithHint("##av2", "value", gAddValue, sizeof(gAddValue));
+			ImGui::SameLine();
+			const bool canAdd = gAddSection[0] && gAddKey[0];
+			ImGui::BeginDisabled(!canAdd);
+			if (ImGui::Button("Add", ImVec2(bw, 0))) { f.doc.Set(gAddSection, gAddKey, gAddValue); gAddKey[0] = gAddValue[0] = 0; gAddSectionOpen = false; }
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(bw, 0))) gAddSectionOpen = false;
+		}
+		ImGui::EndChild();
+	}
+
+	/* ------------------------------------------------------------ right pane: used by */
+
+	void DrawUsedBy(const LocationConfig& cfg) {
+		const LocationStatus& st = Data().LocStatus();
+		const float s = MenuBackend::Scale();
 		const int f = gSel.feature;
 		const FeatureConfig& fc = cfg.Features[f];
+
+		ImGui::BeginChild("##used", ImVec2(0, 0), ImGuiChildFlags_None);
 
 		// defaults
 		const char* defKeys[2] = { nullptr, nullptr };
 		if (f == FeatureNVR || f == FeatureGameSettings) { defKeys[0] = "Exterior"; defKeys[1] = "Interior"; } else defKeys[0] = "DefaultPreset";
+		bool anyDefault = false;
 		for (const char* dk : defKeys) {
 			if (!dk) continue;
 			const std::string* v = fc.Ini.Get("Main", dk);
 			if (v && Lower(*v) == Lower(gSel.preset)) {
 				std::string what = !strcmp(dk, "Exterior") ? "all exteriors" : !strcmp(dk, "Interior") ? "all interiors" : "everything";
 				ImGui::TextColored(MenuTheme::Accent(), "Default for %s", what.c_str());
+				anyDefault = true;
 			}
 		}
+		if (!anyDefault) Muted("Not a default preset.");
 
 		if (!st.Target.empty()) {
-			if (ImGui::Button("Add to current location", ImVec2(-1, 0))) AddToCurrentLocation(cfg, f, gSel.preset);
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Adds %s to [Overrides] %s in %s (then Save that file).", gSel.preset.c_str(), st.Target.c_str(), fc.IniName);
+			const std::string label = "Add to current location (" + st.Target + ")";
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			if (ImGui::Button(label.c_str(), ImVec2(-FLT_MIN, 0))) AddToCurrentLocation(cfg, f, gSel.preset);
+			Tip("Adds " + gSel.preset + " to [Overrides] " + st.Target + " in " + fc.IniName + " (then Save that file).");
 		}
 
-		std::vector<PresetUse> uses = cfg.FindPresetUses((Feature)f, gSel.preset);
-		ImGui::Text("%zu location(s)", uses.size());
-		if (!LocationManager::CanGoTo()) Muted("Go is off: the NVSE console interface is missing.");
-		if (!uses.empty() && ImGui::BeginTable("##uses", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY, ImVec2(0, -ImGui::GetFrameHeightWithSpacing()))) {
+		// One row per editor ID (a cell can match through an override and a keyword): the "why"s are joined.
+		struct Row { std::string id; std::string why; const MenuInstalled* info; };
+		std::vector<Row> rows;
+		{
+			std::map<std::string, size_t> byId;
+			for (const PresetUse& u : cfg.FindPresetUses((Feature)f, gSel.preset)) {
+				std::string why = u.kind == PresetUse::Override ? "override in " + u.via : u.kind == PresetUse::Keyword ? "keyword in " + u.via : "alias " + u.via;
+				auto it = byId.find(Lower(u.editorId));
+				if (it != byId.end()) { rows[it->second].why += "; " + why; continue; }
+				byId[Lower(u.editorId)] = rows.size();
+				rows.push_back({ u.editorId, why, Data().FindInstalled(u.editorId) });
+			}
+		}
+		size_t installed = 0;
+		for (const Row& r : rows) if (r.info) installed++;
+
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		ImGui::InputTextWithHint("##usefilter", "Filter by editor ID", gUseFilter, sizeof(gUseFilter));
+		ImGui::Checkbox("Show not installed", &gShowMissing);
+		ImGui::SameLine();
+		MenuWidgets::MutedF("%zu locations, %zu installed", rows.size(), installed);
+		if (!Data().CanGoTo()) Muted("Go is off: the NVSE console interface is missing.");
+		const std::string filter = Lower(gUseFilter);
+
+		const std::string go = Data().GoStatus();
+		const float footer = go.empty() ? 0.0f : ImGui::GetFrameHeightWithSpacing();
+		if (rows.empty()) Muted("No location uses this preset through [Overrides], KEYWORDS or aliases.");
+		else if (ImGui::BeginTable("##uses", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX, ImVec2(0, -footer))) {
 			ImGui::TableSetupScrollFreeze(0, 1);
-			ImGui::TableSetupColumn("Editor ID", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-			ImGui::TableSetupColumn("Why", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-			ImGui::TableSetupColumn("##go", ImGuiTableColumnFlags_WidthFixed, 52.0f * MenuBackend::Scale());
+			ImGui::TableSetupColumn("Editor ID", ImGuiTableColumnFlags_WidthFixed, 190.0f * s);
+			ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 100.0f * s);
+			ImGui::TableSetupColumn("Plugin", ImGuiTableColumnFlags_WidthFixed, 150.0f * s);
+			ImGui::TableSetupColumn("Why", ImGuiTableColumnFlags_WidthFixed, 260.0f * s);
+			ImGui::TableSetupColumn("##go", ImGuiTableColumnFlags_WidthFixed, 56.0f * s);
 			ImGui::TableHeadersRow();
-			int row = 0;
-			for (const PresetUse& u : uses) {
-				ImGui::PushID(row++);
+			int n = 0;
+			for (const Row& r : rows) {
+				if (!r.info && !gShowMissing) continue;
+				if (!filter.empty() && Lower(r.id).find(filter) == std::string::npos) continue;
+				ImGui::PushID(n++);
 				ImGui::TableNextRow();
-				ImGui::TableNextColumn(); ImGui::TextUnformatted(u.editorId.c_str());
+				if (!r.info) ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
+				ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); CellText(r.id);
+				ImGui::TableNextColumn(); CellText(!r.info ? "Not installed" : r.info->worldspace ? "Worldspace" : "Interior");
+				ImGui::TableNextColumn(); CellText(r.info ? r.info->plugin : "");
+				ImGui::TableNextColumn(); CellText(r.why);
+				if (!r.info) ImGui::PopStyleColor();
 				ImGui::TableNextColumn();
-				std::string why = u.kind == PresetUse::Override ? "Override in " + u.via : u.kind == PresetUse::Keyword ? "keyword in " + u.via : "alias " + u.via;
-				ImGui::TextUnformatted(why.c_str());
-				ImGui::TableNextColumn();
-				if (!LocationManager::CanGoTo()) ImGui::BeginDisabled();
+				const bool canGo = r.info && Data().CanGoTo();
+				ImGui::BeginDisabled(!canGo);
 				if (ImGui::SmallButton("Go")) {
-					if (TheLocationManager->RequestGoTo(u.editorId)) TheGameMenuManager->Enabled = false;
+					if (Data().RequestGoTo(r.id)) Data().CloseMenu();
 				}
-				Tip("Close the menu and travel there (coc, or cow for a worldspace).");
-				if (!LocationManager::CanGoTo()) ImGui::EndDisabled();
+				ImGui::EndDisabled();
+				Tip(r.info ? "Close the menu and travel there (coc, or cow for a worldspace)." : "No cell or worldspace with this editor ID in your load order");
 				ImGui::PopID();
 			}
 			ImGui::EndTable();
 		}
-		const std::string& go = TheLocationManager->GoStatus();
 		if (!go.empty()) Muted(go.c_str());
+		ImGui::EndChild();
+	}
+
+	/* ------------------------------------------------------------ right pane */
+
+	void DrawRight(const LocationConfig& cfg) {
+		if (gSel.path.empty()) { Muted("Pick a preset or a file on the left."); return; }
+		OpenFile& f = Open(gSel.path);
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float s = MenuBackend::Scale();
+		const bool dirty = f.Dirty();
+
+		// Title line: name on the left, unsaved marker + Save / Revert on the right.
+		const float btnW = std::max(ImGui::CalcTextSize("Revert").x, ImGui::CalcTextSize("Save").x) + style.FramePadding.x * 2.0f + 20.0f * s;
+		const char* unsavedText = "Unsaved changes";
+		const float reserve = btnW * 2.0f + style.ItemSpacing.x + (dirty ? ImGui::CalcTextSize(unsavedText).x + style.ItemSpacing.x : 0.0f) + style.ItemSpacing.x * 2.0f;
+		const float total = ImGui::GetContentRegionMax().x;
+		ImGui::AlignTextToFramePadding();
+		ImGui::PushFont(MenuBackend::FontSemiBold());
+		MenuWidgets::Ellipsized(gSel.label, std::max(60.0f * s, ImGui::GetContentRegionAvail().x - reserve));
+		ImGui::PopFont();
+		ImGui::SameLine(total - (reserve - style.ItemSpacing.x * 2.0f));
+		if (dirty) { ImGui::TextColored(MenuTheme::Warning(), "%s", unsavedText); ImGui::SameLine(); }
+		ImGui::BeginDisabled(!dirty);
+		ImGui::PushStyleColor(ImGuiCol_Button, MenuTheme::AccentDim());
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, MenuTheme::Accent());
+		if (ImGui::Button("Save", ImVec2(btnW, 0))) SaveFile(f);
+		ImGui::PopStyleColor(2);
+		Tip("Write this file, then reload the presets so the change shows in the current location.");
+		ImGui::SameLine();
+		if (ImGui::Button("Revert", ImVec2(btnW, 0))) RevertFile(f);
+		Tip("Throw away unsaved edits to this file.");
+		ImGui::EndDisabled();
+
+		ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
+		MenuWidgets::Ellipsized(f.path);
+		ImGui::PopStyleColor();
+		Tip(f.path + "\n\nEdits go to the mod that provides the file; new files go to MO2's overwrite folder.");
+		if (f.missing) ImGui::TextColored(MenuTheme::Warning(), "The file does not exist (Save creates it).");
+		MenuWidgets::StatusLine(gStatus, gStatusError);
+
+		const bool havePreset = !gSel.preset.empty() && gSel.feature >= 0;
+		if (!havePreset) gSubTab = 0;
+		ImGui::Spacing();
+		if (MenuWidgets::TabButton("Values", gSubTab == 0)) gSubTab = 0;
+		if (havePreset) {
+			ImGui::SameLine();
+			if (MenuWidgets::TabButton("Used by", gSubTab == 1)) gSubTab = 1;
+		}
+		ImGui::Spacing();
+
+		if (gSubTab == 1 && havePreset) DrawUsedBy(cfg);
+		else DrawValues(f);
 	}
 }
 
 namespace PresetsPage {
+
+bool SelectPreset(int feature, const char* name) {
+	const LocationConfig& cfg = Data().LocConfig();
+	if (feature < 0 || feature >= FeatureCount) return false;
+	auto it = cfg.Features[feature].Presets.find(Lower(name));
+	if (it == cfg.Features[feature].Presets.end()) return false;
+	gFeature = feature;
+	Select(it->second.path, it->second.name, feature, it->second.name);
+	return true;
+}
+
+void ShowSubTab(int tab) {
+	gSubTab = tab;
+}
+
+void OpenFile(const std::string& path, const std::string& label, int feature, const std::string& preset) {
+	if (feature >= 0) gFeature = feature;
+	Select(path, label, feature, preset);
+	gSubTab = 0;
+}
 
 int UnsavedCount() {
 	int n = 0;
@@ -499,43 +694,34 @@ int UnsavedCount() {
 }
 
 void Draw() {
-	ImGui::PushFont(MenuBackend::FontSemiBold());
-	ImGui::TextUnformatted("Presets");
-	ImGui::PopFont();
-
-	const LocationStatus& st = TheLocationManager->GetStatus();
+	const LocationStatus& st = Data().LocStatus();
 	if (!st.Enabled) {
-		ImGui::Spacing();
 		ImGui::TextWrapped("%s", st.Warning.empty() ? "Locations is off (Main.Main.Locations Enabled), so there are no presets to manage." : st.Warning.c_str());
 		return;
 	}
-	const LocationConfig& cfg = TheLocationManager->GetConfig();
-	const int unsaved = UnsavedCount();
-	if (unsaved) {
-		ImGui::SameLine();
-		ImGui::TextColored(MenuTheme::Warning(), "  %d file(s) with unsaved edits (kept while the game runs)", unsaved);
-	}
-	ImGui::Spacing();
+	const LocationConfig& cfg = Data().LocConfig();
+	const float s = MenuBackend::Scale();
+	const ImGuiStyle& style = ImGui::GetStyle();
 
 	const ImVec2 avail = ImGui::GetContentRegionAvail();
-	const float w = avail.x - ImGui::GetStyle().ItemSpacing.x * 2.0f;
-	// Roomier panes: inner padding on the three columns and more air between rows.
-	const float sc = MenuBackend::Scale();
+	const float maxLeft = std::max(160.0f, std::min(520.0f * s, avail.x * 0.55f));
+	const float minLeft = std::min(220.0f * s, maxLeft);
+	float leftW = std::max(minLeft, std::min(maxLeft, gLeftUnits * s));
+
+	// Both panes use the same roomy padding.
 	auto pane = [&](const char* id, float width, void (*draw)(const LocationConfig&)) {
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f * sc, 14.0f * sc));
-		ImGui::BeginChild(id, ImVec2(width, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f * s, 12.0f * s));
+		ImGui::BeginChild(id, ImVec2(width, avail.y), ImGuiChildFlags_AlwaysUseWindowPadding);
 		ImGui::PopStyleVar();
-		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * sc, 9.0f * sc));
-		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * sc, 5.0f * sc));
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * s, 8.0f * s));
 		draw(cfg);
-		ImGui::PopStyleVar(2);
+		ImGui::PopStyleVar();
 		ImGui::EndChild();
 	};
-	pane("##pl", w * 0.24f, DrawLeft);
-	ImGui::SameLine();
-	pane("##pm", w * 0.48f, DrawMiddle);
-	ImGui::SameLine();
+	pane("##pl", leftW, DrawLeft);
+	if (MenuWidgets::SplitterV("##plsplit", &leftW, minLeft, maxLeft, avail.y)) gLeftUnits = leftW / s;
 	pane("##pr", 0.0f, DrawRight);
+	(void)style;
 }
 
 }

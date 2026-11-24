@@ -1,5 +1,6 @@
 #pragma once
 #include "../../core/GpuProfiler.h"
+#include "../../core/HiddenObjectCulling.h"
 
 void (__thiscall* Render)(Main*, BSRenderedTexture*, int, int) = (void (__thiscall*)(Main*, BSRenderedTexture*, int, int))Hooks::Render;
 void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTexture, int Arg2, int Arg3) {
@@ -7,6 +8,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	SettingsMainStruct* SettingsMain = &TheSettingManager->SettingsMain;
 
 	GpuProfiler::FrameStart(TheRenderManager->device);
+	HiddenObjectCulling::BeginFrame(TheRenderManager->device);	// Vegas Shaders port, off unless installed
 	TheFrameRateManager->UpdatePerformance();
 	TheCameraManager->SetSceneGraph();
 	TheRenderManager->UpdateSceneCameraData();
@@ -52,6 +54,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		//DWNode::AddNode(Name, Geometry->m_parent, Geometry);
 	}
 	(*SetShaders)(This, PassIndex);
+	HiddenObjectCulling::OnBind(PixelShader);	// Vegas Shaders port: only lamp-only passes may be skipped
 
 }
 
@@ -71,7 +74,9 @@ HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt3
 
 void (__thiscall* RenderWorldSceneGraph)(Main*, Sun*, UInt8, UInt8, UInt8) = (void (__thiscall*)(Main*, Sun*, UInt8, UInt8, UInt8))Hooks::RenderWorldSceneGraph;
 void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, UInt8 IsFirstPerson, UInt8 WireFrame, UInt8 Arg4) {
+	HiddenObjectCulling::BeginWorld();
 	(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+	HiddenObjectCulling::EndWorld();
 
 	const bool bPipBoyOpen = InterfaceManager->IsPipBoyOpen();
 	const bool bPipBoyLive = (TheGameMenuManager->IsLiveMenu && TheGameMenuManager->IsLiveMenu(Menu::kMenuType_BigFour, false, false) == GameMenuManager::MenuPauseState::MENU_LIVE);
@@ -91,8 +96,49 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	// Clear the depth buffer before rendering first person model to prevent clipping with world objects & other artefacts
 	TheRenderManager->Clear(NULL, NiRenderer::kClear_ZBUFFER);
 	//ThisCall(0x00874C10, Global);
-	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	{
+		HiddenObjectCulling::Suspend notWorld;	// the weapon is not the world view
+		(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	}
 	TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureViewModel);
+}
+
+// HiddenObjectCulling (Vegas Shaders port, core/HiddenObjectCulling.h): detours on the entries of BSBatchRenderer::RenderPassImmediately_Standard
+// (0xB98E80) and _Skinned (0xB99110). Before() may skip a later lamp-only pass of an object judged hidden; otherwise the original runs and After()
+// ends the occlusion query. Installed at deferred init, only when the setting is on at start.
+static void(__cdecl* RenderPassStandard)(void*, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32))0x00B98E80;
+static void(__cdecl* RenderPassSkinned)(void*, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32))0x00B99110;
+
+static void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	if (HiddenObjectCulling::Before(Pass, true)) return;
+	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	HiddenObjectCulling::After();
+}
+
+static void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	if (HiddenObjectCulling::Before(Pass, true)) return;
+	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	HiddenObjectCulling::After();
+}
+
+void InstallHiddenObjectCulling() {
+	if (HiddenObjectCulling::Installed) return;
+	if (!TheSettingManager->SettingsMain.Main.HiddenObjectCulling) {
+		Logger::Log("[HiddenObjectCulling] off (switch it on in the Performance page or the toml and restart): no detours installed");
+		return;
+	}
+	// Each entry: a jump there already means another plugin detoured it (Detours stacks on top; its code still runs through the trampoline).
+	for (UInt32 entry : { 0x00B98E80u, 0x00B99110u }) {
+		const UInt8 first = *(const UInt8*)entry;
+		Logger::Log("[HiddenObjectCulling] 0x%08X first byte 0x%02X (%s)", entry, first, (first == 0xE9 || first == 0xEB || first == 0xFF) ? "already detoured by another plugin, stacked" : "vanilla");
+	}
+	DetourTransactionBegin();
+	DetourUpdateThread(GetCurrentThread());
+	DetourAttach(&(PVOID&)RenderPassStandard, &RenderPassStandardHook);
+	DetourAttach(&(PVOID&)RenderPassSkinned, &RenderPassSkinnedHook);
+	const LONG result = DetourTransactionCommit();
+	HiddenObjectCulling::Installed = result == NO_ERROR;
+	Logger::Log("[HiddenObjectCulling] RenderPassImmediately_Standard 0xB98E80 and _Skinned 0xB99110 detoured: %s (error %ld)", HiddenObjectCulling::Installed ? "installed" : "FAILED, nothing changed", result);
 }
 
 void (__thiscall* RenderReflections)(WaterManager*, NiCamera*, ShadowSceneNode*) = (void (__thiscall*)(WaterManager*, NiCamera*, ShadowSceneNode*))Hooks::RenderReflections;
@@ -107,7 +153,10 @@ void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* 
 	if (DWNode::Get()) DWNode::AddNode("BEGIN REFLECTIONS RENDERING", NULL, NULL);
 	ShadowData->x = -1.0f; // Disables the shadows rendering for water reflections (the geo is rendered with the same shaders used in the normal scene!)
 	TerrainParallaxData->x = 0;
-	(*RenderReflections)(This, Camera, SceneNode);
+	{
+		HiddenObjectCulling::Suspend notWorld;	// reflection passes are not the main view
+		(*RenderReflections)(This, Camera, SceneNode);
+	}
 	ShadowData->x = ShadowDataBackup;
 	TerrainParallaxData->x = TerrainParallaxBackup;
 	if (DWNode::Get()) DWNode::AddNode("END REFLECTIONS RENDERING", NULL, NULL);
@@ -117,6 +166,7 @@ void (__thiscall* RenderPipboy)(Main*, NiGeometry*, NiDX9Renderer*) = (void (__t
 void __fastcall RenderPipboyHook(Main* This, UInt32 edx, NiGeometry* Geo, NiDX9Renderer* Renderer) {
 	WorldSceneGraph->UpdateParticleShaderFoV(Player->firstPersonFoV);
 //	Player->SetFoV(Player->firstPersonFoV);
+	HiddenObjectCulling::Suspend notWorld;
 	(*RenderPipboy)(This, Geo, Renderer);
 }
 

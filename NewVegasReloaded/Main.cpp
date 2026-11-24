@@ -3,6 +3,7 @@
 
 #include "../src/NewVegas/Hooks/Hooks.h"
 #include "../src/core/Device/Hook.h"
+#include "../src/core/Occlusion/Occlusion.h"
 
 extern "C" {
 
@@ -61,6 +62,11 @@ extern "C" {
 
 			// Make sure all SLS vertex shaders pass and update EyePosition.
 			ShadowLightShader::EnableEyePositionForAllPasses();
+
+			// Built-in occlusion culling (Conor's plugin, integrated). Here, after every plugin's load-time patches, so its call and
+			// vtable patches chain to whatever those left at the patched sites.
+			OcclusionBridge::InstallFromSettings();
+			InstallHiddenObjectCulling();	// Vegas Shaders port, only when its setting is on
 
 			break;
 		}
@@ -123,7 +129,7 @@ extern "C" {
 				MessageBoxA(NULL,
 					"The New Vegas Reloaded shader files are missing.\n\n"
 					"Expected: Data\\Shaders\\NewVegasReloaded\\Shaders and Data\\Shaders\\NewVegasReloaded\\Effects\n\n"
-					"Install the full Jyggs Vibe-code Slop (Optimization Edition) zip, not only the DLL: "
+					"Install the full NVR Unofficial Jyggs Vibecoded Slop zip, not only the DLL: "
 					"for a manual install, everything in the zip (nvse, Shaders, Textures) goes inside the Data folder.",
 					"New Vegas Reloaded", MB_OK | MB_ICONERROR);
 				ExitProcess(0);

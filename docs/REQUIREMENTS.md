@@ -1,47 +1,60 @@
-# What you need, and what plays nice with it
+# NVR Unofficial Jyggs Vibecoded Slop - requirements and compatibility
 
-Good news first: the new menu and the built-in Locations don't need anything that NVR 4.4.1 doesn't already need.
+Covers the build with the new menu and the built-in Cartographer ("Locations"). Status: planned, not
+built or tested in game yet. "Checked" below means checked against the plugins' source code, not tested in
+game.
 
 ## Required
 
-- **Fallout: New Vegas 1.4.0.525**, the normal Steam or GOG exe (4GB-patched like always). Every engine hook uses
-  addresses from that exe.
-- **xNVSE.** NVR is an xNVSE plugin anyway, and xNVSE also puts the keyboard and mouse in shared mode, which is what lets
-  the menu use your mouse normally.
-- **Everything NVR 4.4.1 already asks for**, so just follow the official 4.4.1 install guide (LOD Flicker Fix and friends).
+| Mod | Why |
+|---|---|
+| Fallout: New Vegas 1.4.0.525 (the standard Steam/GOG exe, 4GB-patched as usual) | All engine hooks use addresses from this exe |
+| xNVSE | NVR is an xNVSE plugin. xNVSE also switches the game's keyboard/mouse to shared mode, which the new menu relies on for normal mouse input |
+| Everything NVR 4.4.1 already needs | Same as the official NVR 4.4.1 install guide (xNVSE, LOD Flicker Fix, etc.) |
 
-## Cartographer users, read this
+Nothing else is needed for the new features.
 
-The built-in Locations does Cartographer's job inside the DLL, so **disable `Cartographer.esp`**. Seriously, if the DLL
-sees it loaded, it keeps its own Locations off and tells you so in the log and the menu, so the two don't fight.
+## No longer needed for location presets
 
-Your preset mods keep working though! The DLL reads everything in `Data\Config\Cartographer\` (`Settings.ini`, `NVR.ini`,
-`Lighting.ini`, `Fog.ini`, `GameSettings.ini` and the `*Presets` folders), so Mojave Nights NVR, Mojave Nights Performance
-Mode and the like are fine. Cell keywords come straight from `Data\KEYWORDS\*.ini`, in all three formats (`[0]`, `[1]` and
-`[Keyword]`).
+These were only needed because Cartographer is a script mod. The built-in version does the work inside the
+DLL:
 
-Cartographer itself needed JIP LN NVSE, JohnnyGuitar NVSE, ShowOff NVSE and the KEYWORDS framework. Location presets
-don't anymore. Keep them installed if anything else uses them, though, and in most modlists something does.
+| Mod | Before | Now |
+|---|---|---|
+| Cartographer (`Cartographer.esp`) | The location preset framework | **Replaced. Disable it** (see Conflicts) |
+| JIP LN NVSE | Cartographer's cell, image space, weather and keyword commands | Not needed for presets (keep it if other mods need it, most lists do) |
+| JohnnyGuitar NVSE | Lighting template commands, editor-ID lookup | Not needed for presets |
+| ShowOff NVSE | Cartographer's file/INI helpers | Not needed for presets |
+| KEYWORDS framework | Assigned keywords to cells | Not needed for presets: the DLL reads `Data\KEYWORDS\*.ini` itself. Keep it if other mods use keywords |
 
-**Got interior lighting mods (ALT, SILO, GLO, Natural Interiors...)?** They get along better than they did with
-Cartographer. The built-in version only touches the lighting of the cell you're standing in, and only when a lighting
-preset applies there, instead of rewiring every interior at startup.
+## Works with (reads the same files)
 
-## Don't mix with
+- Any Cartographer preset mod: everything in `Data\Config\Cartographer\` (`Settings.ini`, `NVR.ini`,
+  `Lighting.ini`, `Fog.ini`, `GameSettings.ini` and the `*Presets` folders), e.g. Mojave Nights NVR and Mojave
+  Nights Performance Mode.
+- Cell keywords from `Data\KEYWORDS\*.ini` (all three formats: `[0]`, `[1]`, `[Keyword]`).
 
-- **Atlas**, which also swaps NVR settings per location. Pick one.
-- **Other NVR builds** (official 4.4.1, Unofficial Optimized, Boutique). Same DLL name, so this one replaces them.
+## Conflicts
 
-## Other DLLs I checked
+| Mod | Why | What happens |
+|---|---|---|
+| Cartographer.esp | Does the same job; both would fight | If the DLL sees `Cartographer.esp` loaded, the built-in Locations stays off and shows a warning in the log and menu. Disable the ESP to use the built-in version (preset mods keep working) |
+| Atlas | Also swaps NVR settings per location | Use one or the other |
+| Other NVR builds (official 4.4.1, Unofficial Optimized/Boutique) | Same DLL name | Replace them |
 
-I went through the source of these looking for hooks or patches that overlap with this build's (November 2026). Nothing
-clashed: xNVSE, JIP LN NVSE, JohnnyGuitar NVSE, ShowOff NVSE, kNVSE, yUI (CrashLogger etc.), New Vegas Tick Fix, Heap
-Replacer, Better Transitions, Dynamic Reflections, Real-Time Menus, HDR Patch, Shader Loader, High-Res Bloom / Water Fog,
-LOD Fixes, Moonlight NVSE, Mobile PipBoy Light, Alpha Rendering Tweaks, DoF Fix, External Emittance Fix, Muzzle Flash
-Fix, the viewmodel fixes, Audio Region Fix, OneTweak, Mod Limit Fix, NVUnloaded, Base Object Swapper NV,
-fnv-depth-resolve, vanilla-plus particles, zlib update and DXVK.
+Interior lighting mods (ALT, SILO, GLO, Natural Interiors...): the built-in version only changes the lighting
+of the cell you're in, and only when a lighting preset applies there. They coexist better than with
+Cartographer, which rewired every interior at startup.
 
-That's a code read, not a play test of every one. If something breaks with one of them, please open an issue!
+## Plugins checked for code conflicts (source review, 2026-11-21)
 
-**One known quirk:** a mod's script hotkey can still fire while you're typing in the NVR menu, because xNVSE hands scripts
-their own copy of the keyboard.
+No byte-level overlap and no conflicting behaviour found with: xNVSE, JIP LN NVSE, JohnnyGuitar NVSE, ShowOff
+NVSE, kNVSE, yUI (CrashLogger etc.), New Vegas Tick Fix, Heap Replacer, Better Transitions, Dynamic
+Reflections, Real-Time Menus, HDR Patch, Shader Loader, High-Res Bloom / Water Fog, LOD Fixes, Moonlight NVSE,
+Mobile PipBoy Light, Alpha Rendering Tweaks, DoF Fix, External Emittance Fix, Muzzle Flash Fix, Viewmodel
+fixes, Audio Region Fix, OneTweak, Mod Limit Fix, NVUnloaded, Base Object Swapper NV, fnv-depth-resolve,
+vanilla-plus particles, zlib update, dxvk. Details: the "Compatibility with other DLLs" section of
+`GUI_AND_CARTOGRAPHER_PLAN.md`.
+
+Known limitation: a mod's script hotkey can still fire while you type in the NVR menu (xNVSE gives scripts
+their own copy of the keyboard).

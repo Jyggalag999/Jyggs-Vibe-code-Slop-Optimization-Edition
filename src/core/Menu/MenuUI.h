@@ -7,4 +7,8 @@ namespace MenuUI {
 	void		OnOpened();
 	// Saves the settings file (also used by the KeySave hotkey).
 	void		Save();
+	// Shows a page by path ("Shaders.Bloom", "@Performance", "@Locations", "@Style"). Used by the preview program.
+	void		SelectPage(const char* path);
+	// Starts the key capture of one binding on the Keybinds page (preview program).
+	void		BeginRebind(const char* key);
 }

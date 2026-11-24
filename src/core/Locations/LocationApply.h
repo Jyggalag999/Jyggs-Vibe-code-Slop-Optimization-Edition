@@ -16,19 +16,7 @@
 
 #include "LocationResolver.h"
 
-// Read by the menu's Locations tab (later build). Only valid on the main thread.
-struct LocationStatus {
-	bool Enabled = false;				// Locations is running
-	bool CartographerEsp = false;		// Cartographer.esp is loaded, so Locations stays off
-	std::string Warning;				// text to show the user, empty if none
-	std::string Target;					// editor ID of the cell (interior) or worldspace (exterior) the presets were chosen for
-	bool Interior = false;
-	std::vector<std::string> Keywords;	// keywords of the target that matched a preset or alias, all features together
-	Locations::Resolution Features[Locations::FeatureCount];	// per feature: preset stack and, for each key, the preset the value came from
-	bool Applied[Locations::FeatureCount] = {};					// the feature wrote something for the current target
-	std::string LightingNote;			// why interior lighting is not applied (excluded cell, behave as exterior...), empty if applied
-	unsigned ConfigLoadMs = 0;
-};
+#include "LocationStatus.h"
 
 struct NVSEConsoleInterface;
 class TESObjectCELL;
@@ -47,7 +35,17 @@ public:
 	bool RequestGoTo(const std::string& asEditorId);
 	const std::string& GoStatus() const { return GoResult; }	// last Go outcome, for the menu
 
+	// A cell (interior) or worldspace in the current load order, found by editor ID.
+	struct InstalledInfo {
+		void*		Form = nullptr;
+		bool		Worldspace = false;
+		std::string	Plugin;				// file the form comes from, "?" if unknown
+	};
+	// Null if no interior cell or worldspace has this editor ID. Built once on first call; main thread only.
+	const InstalledInfo* FindInstalled(const std::string& asEditorId);
+
 	void Update();								// every frame
+	void RunPendingGo();						// queued Go from the menu; call from the main loop, never from inside rendering
 	void OnDestination(TESObjectCELL* apCell);	// before the player is moved to apCell (loads, doors, coc, fast travel)
 	void Reload();								// re-read all files and re-apply for the current location (with blending)
 
@@ -80,8 +78,11 @@ private:
 	void	RefreshImageSpace();
 	void	Log(const char* aMessage, ...);
 
-	void	RunPendingGo();
 	bool	IsWorldSpace(const char* asEditorId);
+	void	BuildInstalledIndex();
+
+	std::unordered_map<std::string, InstalledInfo> Installed;	// lowercase editor ID -> form
+	bool		InstalledBuilt = false;
 
 	std::string PendingGo;
 	std::string GoResult;

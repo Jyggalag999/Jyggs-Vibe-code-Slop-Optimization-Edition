@@ -277,6 +277,9 @@
     <ClInclude Include="..\src\core\Menu\MenuTheme.h">
       <Filter>Core\Menu</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\core\Menu\LocationsWindow.h">
+      <Filter>Core\Menu</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\core\Menu\MenuUI.h">
       <Filter>Core\Menu</Filter>
     </ClInclude>
@@ -553,6 +556,9 @@
       <Filter>Core\Menu</Filter>
     </ClCompile>
     <ClCompile Include="..\src\core\Menu\MenuTheme.cpp">
+      <Filter>Core\Menu</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\core\Menu\LocationsWindow.cpp">
       <Filter>Core\Menu</Filter>
     </ClCompile>
     <ClCompile Include="..\src\core\Menu\MenuUI.cpp">

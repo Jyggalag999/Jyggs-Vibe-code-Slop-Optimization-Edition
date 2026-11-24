@@ -1,16 +1,22 @@
 #include "MenuUI.h"
 #include "MenuBackend.h"
 #include "MenuTheme.h"
-#include "PresetsPage.h"
+#include "MenuData.h"
+#include "MenuWidgets.h"
 #include "../../../lib/imgui/imgui.h"
 #include <set>
+#include <map>
+#include <algorithm>
+#include <cmath>
 
 // The game headers define min/max macros.
 #undef min
 #undef max
 
-using ConfigNode = SettingManager::Configuration::ConfigNode;
-using NodeType = SettingManager::Configuration::NodeType;
+using ConfigNode = MenuNode;
+namespace NodeType = MenuNodeType;
+using MenuWidgets::Tip;
+using MenuWidgets::ToggleSwitch;
 
 namespace {
 	// ------------------------------------------------------------------ data
@@ -42,6 +48,7 @@ namespace {
 		std::vector<std::string>			cols;
 		std::vector<std::string>			keys;
 		std::vector<std::vector<Cell>>		rows;	// [key][col]
+		bool								anyPreset = false;	// some value comes from the Performance preset: every value gets the badge slot
 	};
 
 	struct Model {
@@ -58,8 +65,8 @@ namespace {
 
 	constexpr const char* kPerformance = "@Performance";
 	constexpr const char* kLocations = "@Locations";
-	constexpr const char* kPresets = "@Presets";
 	constexpr const char* kStyle = "@Style";
+	constexpr const char* kKeybinds = "@Keybinds";
 
 	std::vector<Category>		gCategories;
 	std::vector<SearchEntry>	gSearchIndex;
@@ -101,24 +108,7 @@ namespace {
 		hi = std::max(hi, cur);
 	}
 
-	bool GetDefaultValue(const ConfigNode& node, std::string& out) {
-		char path[256] = "_";
-		strncat(path, node.Section, sizeof(path) - 2);
-		StringList keys;
-		SettingManager::SplitString(path, ".", &keys);
-		tomlValue* section = TheSettingManager->Config.FindSection(&TheSettingManager->Config.DefaultConfig, &keys);
-		if (!section) return false;
-		try {
-			const tomlValue& v = section->at(node.Key);
-			char buf[64];
-			if (v.is_boolean()) { out = v.as_boolean() ? "1" : "0"; return true; }
-			if (v.is_integer()) { snprintf(buf, sizeof(buf), "%d", (int)v.as_integer()); out = buf; return true; }
-			if (v.is_floating()) { snprintf(buf, sizeof(buf), "%.6g", (double)v.as_floating()); out = buf; return true; }
-			if (v.is_string()) { out = std::string(v.as_string()); return true; }
-		}
-		catch (const std::exception&) {}
-		return false;
-	}
+	bool GetDefaultValue(const ConfigNode& node, std::string& out, bool preset = false) { return Data().DefaultValue(node, preset, out); }
 
 	bool IsChanged(const Cell& c) {
 		if (!c.present || !c.hasDefault) return false;
@@ -132,7 +122,8 @@ namespace {
 		ConfigNode n = c.node;
 		strncpy(n.Value, value.c_str(), sizeof(n.Value) - 1);
 		n.Value[sizeof(n.Value) - 1] = 0;
-		TheSettingManager->SetSetting(&n);
+		if (c.preset) Data().SetPresetSetting(n);
+		else Data().SetSetting(n);
 		if (!strcmp(n.Key, "Quality") || !strcmp(n.Key, "PerformancePreset")) gModelDirty = true; // some sections appear or hide with the quality level
 		strcpy(c.node.Value, n.Value);
 		strncpy(c.text, n.Value, sizeof(c.text) - 1);
@@ -146,37 +137,6 @@ namespace {
 		return buf;
 	}
 
-	void Tip(const std::string& text) {
-		if (text.empty() || !ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_DelayShort)) return;
-		ImGui::BeginTooltip();
-		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-		ImGui::TextUnformatted(text.c_str());
-		ImGui::PopTextWrapPos();
-		ImGui::EndTooltip();
-	}
-
-	bool ToggleSwitch(const char* id, bool* value) {
-		const float h = ImGui::GetFrameHeight() * 0.80f;
-		const float w = h * 1.8f;
-		const ImVec2 size(w, ImGui::GetFrameHeight());
-		const ImVec2 pos = ImGui::GetCursorScreenPos();
-		const bool pressed = ImGui::InvisibleButton(id, size);
-		if (pressed) *value = !*value;
-
-		const ImVec2 p0(pos.x, pos.y + (size.y - h) * 0.5f);
-		const ImVec2 p1(p0.x + w, p0.y + h);
-		ImDrawList* dl = ImGui::GetWindowDrawList();
-		const bool hov = ImGui::IsItemHovered();
-		ImVec4 off = hov ? ImVec4(0.26f, 0.29f, 0.35f, 1.0f) : ImVec4(0.21f, 0.23f, 0.28f, 1.0f);
-		ImVec4 on = MenuTheme::Accent();
-		if (hov) { on.x = std::min(on.x + 0.06f, 1.0f); on.y = std::min(on.y + 0.06f, 1.0f); on.z = std::min(on.z + 0.06f, 1.0f); }
-		dl->AddRectFilled(p0, p1, ImGui::GetColorU32(*value ? on : off), h * 0.5f);
-		const float r = h * 0.5f - 3.0f;
-		const float cx = *value ? p1.x - h * 0.5f : p0.x + h * 0.5f;
-		dl->AddCircleFilled(ImVec2(cx, p0.y + h * 0.5f), r, IM_COL32(236, 238, 242, 255));
-		return pressed;
-	}
-
 	bool IsShaderEnabledCached(const std::string& name) {
 		auto it = gShaderEnabled.find(name);
 		return it != gShaderEnabled.end() && it->second;
@@ -186,12 +146,12 @@ namespace {
 		gShaderEnabled.clear();
 		for (const Category& c : gCategories)
 			if (c.name == "Shaders")
-				for (const Item& i : c.items) gShaderEnabled[i.name] = TheSettingManager->GetMenuShaderEnabled(i.name.c_str());
+				for (const Item& i : c.items) gShaderEnabled[i.name] = Data().ShaderEnabled(i.name);
 		gShaderCacheAge = 0;
 	}
 
 	void SwitchShader(const std::string& name) {
-		TheShaderManager->SwitchShaderStatus(name.c_str());
+		Data().ToggleShader(name);
 		if (!gToggledShaders.erase(name)) gToggledShaders.insert(name);
 		gNeedLoad = true;
 		RefreshShaderCache();
@@ -202,17 +162,17 @@ namespace {
 	void FillDefaults(Table& t) {
 		for (auto& row : t.rows)
 			for (Cell& c : row)
-				if (c.present) c.hasDefault = GetDefaultValue(c.node, c.def);
+				if (c.present) c.hasDefault = GetDefaultValue(c.node, c.def, c.preset);
 	}
 
 	// sections = (display name, full section path). Sections with identical keys share one table.
 	void AddTables(Model& m, const std::vector<std::pair<std::string, std::string>>& sections) {
-		struct Group { std::string sig; std::vector<std::string> names; std::vector<SettingManager::Configuration::SettingList> lists; };
+		struct Group { std::string sig; std::vector<std::string> names; std::vector<std::vector<MenuNode>> lists; };
 		std::vector<Group> groups;
 
 		for (const auto& [name, full] : sections) {
-			SettingManager::Configuration::SettingList list;
-			TheSettingManager->FillMenuSettings(&list, full.c_str());
+			std::vector<MenuNode> list;
+			Data().MenuSettings(list, full);
 			if (name == "Status") // the switch in the header replaces Status.Enabled
 				list.erase(std::remove_if(list.begin(), list.end(), [](const ConfigNode& n) { return !strcmp(n.Key, "Enabled"); }), list.end());
 			if (list.empty()) continue;
@@ -237,11 +197,12 @@ namespace {
 					Cell& cell = t.rows[k][c];
 					cell.present = true;
 					cell.node = g.lists[c][k];
-					cell.preset = TheSettingManager->IsPresetOverridden(cell.node.Section, cell.node.Key);
+					cell.preset = Data().IsPresetOverridden(cell.node.Section, cell.node.Key);
 					strncpy(cell.text, cell.node.Value, sizeof(cell.text) - 1);
 				}
 			}
 			FillDefaults(t);
+			for (const auto& row : t.rows) for (const Cell& c : row) t.anyPreset = t.anyPreset || c.preset;
 			m.tables.push_back(std::move(t));
 		}
 	}
@@ -251,15 +212,15 @@ namespace {
 		gModel.path = path;
 		gModel.readOnly = IsWeatherPath(path);
 
-		StringList sections;
-		TheSettingManager->FillMenuSections(&sections, path.c_str());
+		std::vector<std::string> sections;
+		Data().MenuSections(sections, path.c_str());
 		std::vector<std::pair<std::string, std::string>> secs;
 		for (const std::string& s : sections) secs.push_back({ s, path + "." + s });
 		AddTables(gModel, secs);
 
 		if (IsShaderPath(path)) {
 			ConfigNode status;
-			if (TheSettingManager->Config.FillNode(&status, (path + ".Status").c_str(), "Enabled")) gModel.description = status.Description;
+			if (Data().FillNode(status, path + ".Status", "Enabled")) gModel.description = status.Description;
 		}
 		gModelDirty = false;
 	}
@@ -267,7 +228,7 @@ namespace {
 	void BuildPerformanceModel() {
 		gModel = Model();
 		gModel.path = kPerformance;
-		AddTables(gModel, { { "Switches", "Main.Main.Performance" }, { "Profiler and benchmark", "Main.Main.Profiler" } });
+		AddTables(gModel, { { "Switches", "Main.Main.Performance" }, { "Occlusion culling", "Main.Main.Occlusion" }, { "Profiler and benchmark", "Main.Main.Profiler" } });
 		gModelDirty = false;
 	}
 
@@ -282,51 +243,40 @@ namespace {
 		gCategories.clear();
 		gSearchIndex.clear();
 
-		StringList top;
-		TheSettingManager->FillMenuSections(&top, nullptr);
+		std::vector<std::string> top;
+		Data().MenuSections(top, nullptr);
 		for (const std::string& cat : top) {
 			Category c;
 			c.name = cat;
-			StringList items;
-			TheSettingManager->FillMenuSections(&items, cat.c_str());
+			std::vector<std::string> items;
+			Data().MenuSections(items, cat.c_str());
 			for (const std::string& i : items)
 				c.items.push_back({ cat + "." + i, i, cat == "Shaders", cat == "Weathers" });
 			gCategories.push_back(std::move(c));
 		}
 
 		// Search index over the defaults (names only, no value lookups).
-		try {
-			for (const auto& [k1, v1] : TheSettingManager->Config.DefaultConfig.as_table()) {
-				if (!v1.is_table() || k1 == "_Preset") continue;
-				const std::string cat = (k1.size() && k1[0] == '_') ? k1.substr(1) : k1;
-				for (const auto& [k2, v2] : v1.as_table()) {
-					if (!v2.is_table()) continue;
-					std::string blob = Lower(k2) + "|";
-					for (const auto& [k3, v3] : v2.as_table()) {
-						blob += Lower(k3) + "|";
-						if (v3.is_table())
-							for (const auto& [k4, v4] : v3.as_table()) blob += Lower(k4) + "|";
-					}
-					gSearchIndex.push_back({ cat + "." + k2, blob });
-				}
-			}
-		}
-		catch (const std::exception& e) {
-			Logger::Log("Menu: could not build the search index: %s", e.what());
-		}
+		std::vector<std::pair<std::string, std::string>> idx;
+		Data().SearchIndex(idx);
+		for (auto& e : idx) gSearchIndex.push_back({ e.first, e.second });
 
 		RefreshShaderCache();
 		gBuilt = true;
 	}
 
+	void StopRebind();
+
 	void Select(const std::string& path) {
 		if (gSelected == path) return;
+		StopRebind();
 		gSelected = path;
 		gModelDirty = true;
 		gEditId.clear();
 	}
 
 	// ------------------------------------------------------------------ widgets
+
+	float NumberTextWidth() { return ImGui::CalcTextSize("-00000.000").x; }
 
 	// Number editing by typing: Ctrl+click on a slider (ImGui) or double click (here).
 	bool DrawNumber(Cell& c, const std::string& id, float width) {
@@ -355,21 +305,29 @@ namespace {
 		GetSliderRange(c.node, c.def, isInt, lo, hi);
 		const double cur = atof(c.node.Value);
 
+		// The value is written in its own field after the slider, so the text never sits under the grab.
+		const float valW = NumberTextWidth();
 		bool edited;
 		float f = (float)cur;
 		int iv = (int)floor(cur + 0.5);
-		if (isInt) edited = ImGui::SliderInt("##v", &iv, (int)lo, (int)hi);
-		else edited = ImGui::SliderFloat("##v", &f, lo, hi, "%.3f");
+		ImGui::SetNextItemWidth(std::max(30.0f, width - valW - ImGui::GetStyle().ItemSpacing.x));
+		if (isInt) edited = ImGui::SliderInt("##v", &iv, (int)lo, (int)hi, "");
+		else edited = ImGui::SliderFloat("##v", &f, lo, hi, "");
 
 		const ImGuiID itemId = ImGui::GetItemID();
+		const bool itemActivated = ImGui::IsItemActivated();
+		const bool itemHovered = ImGui::IsItemHovered();
+		ImGui::SameLine();
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextUnformatted(FormatNumber(isInt ? (double)iv : (double)f, isInt).c_str());
 		const double now = ImGui::GetTime();
-		if (ImGui::IsItemActivated()) {
+		if (itemActivated) {
 			// keep the value from before the first click of a double click, so the click does not move it
 			if (!(gClick.id == itemId && now - gClick.time < ImGui::GetIO().MouseDoubleClickTime)) gClick.startValue = (float)cur;
 			gClick.id = itemId;
 			gClick.time = now;
 		}
-		if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && gClick.id == itemId) {
+		if (itemHovered && ImGui::IsMouseDoubleClicked(0) && gClick.id == itemId) {
 			Commit(c, FormatNumber(gClick.startValue, isInt));
 			gEditId = id;
 			snprintf(gEditBuf, sizeof(gEditBuf), "%s", c.node.Value);
@@ -380,13 +338,22 @@ namespace {
 		return changed;
 	}
 
-	void DrawCell(Cell& c, const std::string& id, bool readOnly) {
+	void DrawCell(Cell& c, const std::string& id, bool readOnly, bool badgeSlot) {
 		ImGui::PushID(id.c_str());
 		const ImGuiStyle& style = ImGui::GetStyle();
 		const float resetW = ImGui::CalcTextSize("Reset").x + style.FramePadding.x * 2.0f;
-		const float width = std::max(40.0f, ImGui::GetContentRegionAvail().x - resetW - style.ItemSpacing.x);
+		const float badgeW = MenuWidgets::BadgeWidth("PRESET");
+		const float x0 = ImGui::GetCursorPosX();
+		const float availW = ImGui::GetContentRegionAvail().x;
+		const float width = std::max(40.0f, availW - resetW - style.ItemSpacing.x - (badgeSlot ? badgeW + style.ItemSpacing.x : 0.0f));
 
-		readOnly = readOnly || c.preset;
+		if (badgeSlot) {
+			// Small outlined badge: this row's value belongs to the Performance preset. Every row of a table that
+			// has one keeps the slot, so the values line up.
+			if (c.preset) MenuWidgets::Badge("PRESET"); else ImGui::Dummy(ImVec2(badgeW, 0));
+			ImGui::SameLine();
+		}
+
 		ImGui::BeginDisabled(readOnly);
 		switch (c.node.Type) {
 		case NodeType::Boolean: {
@@ -405,12 +372,21 @@ namespace {
 			break;
 		}
 		ImGui::EndDisabled();
-		Tip(c.preset ? std::string("Set by the Performance preset. Turn it off to edit.") : c.node.Description);
+		Tip(c.preset ? std::string("Value used while the Performance preset is on. Edits change the preset's value; Reset goes back to the preset default.\n\n") + c.node.Description : c.node.Description);
 
-		ImGui::SameLine();
+		// The Reset slot sits at the right edge of the column and is always reserved, so controls start at the
+		// same x in every row and nothing jumps when a row changes.
+		ImGui::SameLine(x0 + availW - resetW);
 		if (!readOnly && IsChanged(c)) {
-			if (ImGui::Button("Reset")) {
-				Commit(c, c.def);
+			if (ImGui::Button("Reset", ImVec2(resetW, 0))) {
+				if (c.preset) {
+					// Back to the preset's own value: drop the user's override instead of storing the default.
+					Data().RemovePresetSetting(c.node.Section, c.node.Key);
+					strncpy(c.node.Value, c.def.c_str(), sizeof(c.node.Value) - 1);
+					strncpy(c.text, c.node.Value, sizeof(c.text) - 1);
+					gNeedLoad = true;
+				}
+				else Commit(c, c.def);
 				gEditId.clear();
 			}
 			Tip("Back to the default value: " + c.def);
@@ -424,13 +400,45 @@ namespace {
 	void DrawTable(Table& t, int tableIndex, bool readOnly) {
 		if (!t.title.empty()) ImGui::SeparatorText(t.title.c_str());
 
+		const float s = MenuBackend::Scale();
+		const ImGuiStyle& style = ImGui::GetStyle();
 		const int ncol = (int)t.cols.size();
-		const std::string tid = "##table" + std::to_string(tableIndex);
-		if (!ImGui::BeginTable(tid.c_str(), 1 + ncol, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) return;
+		const bool multi = ncol > 1;
+		const float total = ImGui::GetContentRegionAvail().x;
+		const float pad = style.CellPadding.x * 2.0f;
+		const float dot = ImGui::GetFontSize() * 0.55f + 4.0f;
 
-		ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch, ncol > 1 ? 0.8f : 0.45f);
-		for (const std::string& c : t.cols) ImGui::TableSetupColumn(c.c_str(), ImGuiTableColumnFlags_WidthStretch, 1.0f);
-		if (ncol > 1) ImGui::TableHeadersRow();
+		// Label column: as wide as the longest key (plus the changed-dot), 30-50% of the width.
+		float keyW = 0.0f;
+		for (const std::string& k : t.keys) keyW = std::max(keyW, ImGui::CalcTextSize(k.c_str()).x);
+		const float labelW = std::min(std::max(keyW + dot + pad, total * 0.30f), total * 0.50f);
+		// Value columns: never narrower than 170*scale; when they do not fit the table scrolls sideways.
+		const float overhead = ImGui::CalcTextSize("Reset").x + style.FramePadding.x * 2.0f + style.ItemSpacing.x * 2.0f + pad
+			+ (t.anyPreset ? MenuWidgets::BadgeWidth("PRESET") + style.ItemSpacing.x : 0.0f);
+		bool anyNumber = false;
+		for (const auto& row : t.rows) for (const Cell& c : row) anyNumber = anyNumber || (c.present && c.node.Type != NodeType::Boolean);
+		const float valueMin = anyNumber ? 100.0f * s + NumberTextWidth() + style.ItemSpacing.x : MenuWidgets::ToggleSwitchWidth();
+		const float colW = multi ? std::max(valueMin + overhead, (total - labelW - pad) / ncol) : 0.0f;
+		ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX | ImGuiTableFlags_SizingFixedFit;
+		if (multi && labelW + colW * ncol > total - pad + 0.5f) flags |= ImGuiTableFlags_ScrollX;
+
+		const std::string tid = "##table" + std::to_string(tableIndex);
+		// A table that scrolls sideways gets exactly the height of its rows plus the scroll bar, so it never scrolls
+		// vertically inside the page's own scroll area.
+		ImVec2 outer(0.0f, 0.0f);
+		if (flags & ImGuiTableFlags_ScrollX) {
+			const float rowH = ImGui::GetFrameHeight() + style.CellPadding.y * 2.0f;
+			outer.y = (ImGui::GetTextLineHeight() + style.CellPadding.y * 2.0f) + rowH * (float)t.keys.size() + style.ScrollbarSize + 3.0f;
+		}
+		if (!ImGui::BeginTable(tid.c_str(), 1 + ncol, flags, outer)) return;
+
+		ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthFixed, labelW);
+		for (const std::string& c : t.cols) {
+			if (multi) ImGui::TableSetupColumn(c.c_str(), ImGuiTableColumnFlags_WidthFixed, colW);
+			else ImGui::TableSetupColumn(c.c_str(), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+		}
+		if (flags & ImGuiTableFlags_ScrollX) ImGui::TableSetupScrollFreeze(1, 0);
+		if (multi) ImGui::TableHeadersRow();
 
 		for (size_t k = 0; k < t.keys.size(); k++) {
 			ImGui::TableNextRow();
@@ -444,29 +452,26 @@ namespace {
 			}
 
 			ImGui::AlignTextToFramePadding();
-			const float dot = ImGui::GetFontSize() * 0.55f;
 			if (changed) {
 				const ImVec2 p = ImGui::GetCursorScreenPos();
-				ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + dot * 0.5f, p.y + ImGui::GetFrameHeight() * 0.5f), dot * 0.32f, ImGui::GetColorU32(MenuTheme::Accent()));
+				ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + dot * 0.4f, p.y + ImGui::GetFrameHeight() * 0.5f), dot * 0.28f, ImGui::GetColorU32(MenuTheme::Accent()));
 			}
-			ImGui::Indent(dot + 4.0f);
-			ImGui::TextUnformatted(t.keys[k].c_str());
-			Tip(desc);
-			ImGui::Unindent(dot + 4.0f);
+			ImGui::Indent(dot);
+			const bool cut = MenuWidgets::Ellipsized(t.keys[k]);
+			Tip(cut ? t.keys[k] + (desc.empty() ? "" : "\n\n" + desc) : desc);
+			ImGui::Unindent(dot);
 
 			for (int c = 0; c < ncol; c++) {
 				ImGui::TableSetColumnIndex(1 + c);
 				Cell& cell = t.rows[k][c];
-				if (cell.present) DrawCell(cell, std::to_string(tableIndex) + "_" + std::to_string(k) + "_" + std::to_string(c), readOnly);
+				if (cell.present) DrawCell(cell, std::to_string(tableIndex) + "_" + std::to_string(k) + "_" + std::to_string(c), readOnly, t.anyPreset);
 			}
 		}
 		ImGui::EndTable();
 	}
 
 	void DrawPageTitle(const char* title) {
-		ImGui::PushFont(MenuBackend::FontSemiBold());
-		ImGui::TextUnformatted(title);
-		ImGui::PopFont();
+		MenuWidgets::PageHeader(title);
 	}
 
 	void DrawItem() {
@@ -477,7 +482,7 @@ namespace {
 
 		DrawPageTitle(name.c_str());
 		if (shader) {
-			ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight() * 1.45f);
+			ImGui::SameLine(ImGui::GetContentRegionMax().x - MenuWidgets::ToggleSwitchWidth());
 			bool on = IsShaderEnabledCached(name);
 			if (ToggleSwitch("##enable", &on)) SwitchShader(name);
 			Tip("Turn this effect on or off");
@@ -491,8 +496,7 @@ namespace {
 		}
 		if (gModel.readOnly) {
 			if (ImGui::Button("Force this weather")) {
-				TESWeather* weather = (TESWeather*)DataHandler->GetFormByName(name.c_str(), TESForm::FormType::kFormType_Weather);
-				if (weather && Tes && Tes->sky) Tes->sky->ForceWeather(weather);
+				Data().ForceWeather(name);
 			}
 			ImGui::SameLine();
 			ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
@@ -518,7 +522,12 @@ namespace {
 		ImGui::Spacing();
 		ImGui::BeginChild("##scroll", ImVec2(0, 0), ImGuiChildFlags_None);
 
-		const LocationStatus& st = TheLocationManager->GetStatus();
+		ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
+		ImGui::Text("Presets and teleport: press %s for the Locations window.", Data().LocationsKeyName().c_str());
+		ImGui::PopStyleColor();
+		ImGui::Spacing();
+
+		const LocationStatus& st = Data().LocStatus();
 		if (!st.Warning.empty()) {
 			ImGui::PushTextWrapPos(0.0f);
 			ImGui::TextColored(MenuTheme::Warning(), "%s", st.Warning.c_str());
@@ -528,100 +537,30 @@ namespace {
 
 		for (size_t i = 0; i < gModel.tables.size(); i++) DrawTable(gModel.tables[i], (int)i, false);
 
-		ImGui::SeparatorText("Current location");
-		if (ImGui::Button("Reload presets", ImVec2(150.0f * MenuBackend::Scale(), 0))) TheLocationManager->Reload();
-		Tip("Re-reads the Cartographer files and applies them to where you are now.");
-		ImGui::SameLine();
-		ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
-		ImGui::TextUnformatted("Re-reads Data\\Config\\Cartographer and Data\\KEYWORDS and re-applies (blends if BlendSeconds > 0).");
-		ImGui::PopStyleColor();
-
-		if (st.Target.empty()) {
-			ImGui::TextUnformatted(st.Enabled ? "No location picked yet." : "Locations is off.");
-			ImGui::EndChild();
-			return;
-		}
-		ImGui::Text("%s", st.Interior ? "Interior cell:" : "Worldspace:");
-		ImGui::SameLine();
-		ImGui::TextColored(MenuTheme::Accent(), "%s", st.Target.c_str());
-		std::string kw;
-		for (const std::string& k : st.Keywords) kw += (kw.empty() ? "" : ", ") + k;
-		ImGui::PushTextWrapPos(0.0f);
-		ImGui::Text("Keywords: %s", kw.empty() ? "none" : kw.c_str());
-		ImGui::PopTextWrapPos();
-
-		static bool showAll = false;
-		ImGui::Checkbox("Show values from the default preset too", &showAll);
-
-		for (int f = 0; f < Locations::FeatureCount; f++) {
-			const Locations::Resolution& r = st.Features[f];
-			const char* name = TheLocationManager->FeatureName(f);
-			ImGui::SeparatorText(name);
-			if (!r.valid) {
-				ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
-				const std::string& why = (f == Locations::FeatureLighting && !st.LightingNote.empty()) ? st.LightingNote : r.reason;
-				ImGui::Text("Not used: %s", why.empty() ? "nothing to do" : why.c_str());
-				ImGui::PopStyleColor();
-				continue;
-			}
-			std::string stack;
-			for (const std::string& p : r.stack) stack += (stack.empty() ? "" : " > ") + p;
-			ImGui::PushTextWrapPos(0.0f);
-			ImGui::Text("Presets (later wins): %s", stack.c_str());
-			ImGui::PopTextWrapPos();
-			if (!st.Applied[f]) {
-				ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
-				ImGui::TextUnformatted("Same presets as before, nothing was written.");
-				ImGui::PopStyleColor();
-			}
-			const std::string id = std::string("##loc") + name;
-			if (ImGui::BeginTable(id.c_str(), 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
-				ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-				ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-				ImGui::TableSetupColumn("From preset", ImGuiTableColumnFlags_WidthStretch, 1.5f);
-				ImGui::TableHeadersRow();
-				for (const Locations::ResolvedValue& v : r.values) {
-					if (!showAll && v.source == r.defaultPreset) continue;
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn(); ImGui::Text("%s : %s", v.section.c_str(), v.key.c_str());
-					ImGui::TableNextColumn(); ImGui::TextUnformatted(v.value.c_str());
-					ImGui::TableNextColumn(); ImGui::TextUnformatted(v.source.c_str());
-				}
-				ImGui::EndTable();
-			}
-		}
-
 		ImGui::EndChild();
 	}
 
 	// ---- Style page: the menu colors. Each change writes all style keys so the file is complete and the
 	// old-default migration in SettingManager never mistakes a half-written section for an untouched one.
-	void Revert();
-	struct StyleColor { const char* key; const char* label; const char* tip; UInt8* (*get)(); const char* def; };
-	UInt8* StyleAccent() { return TheSettingManager->SettingsMain.Menu.AccentColor; }
-	UInt8* StyleBackground() { return TheSettingManager->SettingsMain.Menu.BackgroundColor; }
-	UInt8* StylePanel() { return TheSettingManager->SettingsMain.Menu.PanelColor; }
-	UInt8* StyleFrame() { return TheSettingManager->SettingsMain.Menu.FrameColor; }
-	UInt8* StyleText() { return TheSettingManager->SettingsMain.Menu.TextColor; }
-	UInt8* StyleCursor() { return TheSettingManager->SettingsMain.Menu.CursorColor; }
+	struct StyleColor { const char* key; const char* label; const char* tip; const char* def; };
 	const StyleColor kStyleColors[] = {
-		{ "AccentColor", "Accent", "Checkmarks, sliders, selection and highlights.", StyleAccent, "40,140,255" },
-		{ "BackgroundColor", "Background", "The menu window.", StyleBackground, "8,9,12" },
-		{ "PanelColor", "Panels", "Sidebar, content area and popups.", StylePanel, "14,17,24" },
-		{ "FrameColor", "Fields and buttons", "Input fields, buttons and table rows. Hover and pressed shades are derived from it.", StyleFrame, "22,28,40" },
-		{ "TextColor", "Text", "Text color. The muted and disabled shades are derived from it.", StyleText, "226,232,242" },
-		{ "CursorColor", "Cursor", "Mouse cursor color, used only when 'Cursor matches accent' is off.", StyleCursor, "255,255,255" },
+		{ "AccentColor", "Accent", "Checkmarks, sliders, selection and highlights.", "40,140,255" },
+		{ "BackgroundColor", "Background", "The menu window.", "8,9,12" },
+		{ "PanelColor", "Panels", "Sidebar, content area and popups.", "14,17,24" },
+		{ "FrameColor", "Fields and buttons", "Input fields, buttons and table rows. Hover and pressed shades are derived from it.", "22,28,40" },
+		{ "TextColor", "Text", "Text color. The muted and disabled shades are derived from it.", "226,232,242" },
+		{ "CursorColor", "Cursor", "Mouse cursor color, used only when 'Cursor matches accent' is off.", "255,255,255" },
 	};
 
 	void CommitStyleString(const char* key, const std::string& value) {
 		ConfigNode n;
-		if (!TheSettingManager->Config.FillNode(&n, "Main.Menu.Style", key)) return;
+		if (!Data().FillNode(n, "Main.Menu.Style", key)) return;
 		strncpy(n.Value, value.c_str(), sizeof(n.Value) - 1);
 		n.Value[sizeof(n.Value) - 1] = 0;
-		TheSettingManager->SetSetting(&n);
+		Data().SetSetting(n);
 	}
 
-	std::string RgbString(const UInt8* c) {
+	std::string RgbString(const unsigned char* c) {
 		char b[24];
 		snprintf(b, sizeof(b), "%d,%d,%d", c[0], c[1], c[2]);
 		return b;
@@ -629,8 +568,12 @@ namespace {
 
 	// Writes the current values (with one replaced) and asks for a reload + theme refresh.
 	void CommitStyle(const char* changedKey, const std::string& changedValue, bool cursorMatches) {
-		for (const StyleColor& s : kStyleColors) CommitStyleString(s.key, !strcmp(s.key, changedKey) ? changedValue : RgbString(s.get()));
-		TheSettingManager->SetSetting("Main.Menu.Style", "CursorMatchesAccent", cursorMatches);
+		for (const StyleColor& s : kStyleColors) {
+			unsigned char cur[3];
+			Data().StyleRgb(s.key, cur);
+			CommitStyleString(s.key, !strcmp(s.key, changedKey) ? changedValue : RgbString(cur));
+		}
+		Data().SetBool("Main.Menu.Style", "CursorMatchesAccent", cursorMatches);
 		gNeedLoad = true;
 	}
 
@@ -644,14 +587,15 @@ namespace {
 		ImGui::Spacing();
 
 		const float labelW = 190.0f * MenuBackend::Scale();
-		bool matches = TheSettingManager->SettingsMain.Menu.CursorMatchesAccent;
+		bool matches = Data().CursorMatchesAccent();
 		for (const StyleColor& s : kStyleColors) {
 			const bool cursorRow = !strcmp(s.key, "CursorColor");
 			if (cursorRow) {
 				if (ImGui::Checkbox("Cursor matches accent", &matches)) CommitStyle("", "", matches);
 				Tip("Draw the mouse cursor in the accent color. Turn off to pick its own color below.");
 			}
-			UInt8* c = s.get();
+			unsigned char c[3];
+			Data().StyleRgb(s.key, c);
 			float col[3] = { c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f };
 			ImGui::AlignTextToFramePadding();
 			ImGui::TextUnformatted(s.label);
@@ -660,7 +604,7 @@ namespace {
 			ImGui::SetNextItemWidth(-1);
 			if (cursorRow && matches) ImGui::BeginDisabled();
 			if (ImGui::ColorEdit3((std::string("##") + s.key).c_str(), col, ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_InputRGB | ImGuiColorEditFlags_Uint8)) {
-				UInt8 v[3] = { (UInt8)(col[0] * 255.0f + 0.5f), (UInt8)(col[1] * 255.0f + 0.5f), (UInt8)(col[2] * 255.0f + 0.5f) };
+				unsigned char v[3] = { (unsigned char)(col[0] * 255.0f + 0.5f), (unsigned char)(col[1] * 255.0f + 0.5f), (unsigned char)(col[2] * 255.0f + 0.5f) };
 				CommitStyle(s.key, RgbString(v), matches);
 			}
 			if (cursorRow && matches) ImGui::EndDisabled();
@@ -672,16 +616,146 @@ namespace {
 		const float bw = 190.0f * MenuBackend::Scale();
 		if (ImGui::Button("Reset to black & blue", ImVec2(bw, 0))) {
 			for (const StyleColor& s : kStyleColors) CommitStyleString(s.key, s.def);
-			TheSettingManager->SetSetting("Main.Menu.Style", "CursorMatchesAccent", true);
+			Data().SetBool("Main.Menu.Style", "CursorMatchesAccent", true);
 			gNeedLoad = true;
 		}
 		Tip("Puts all menu colors back to the black and blue defaults (not saved until you press Save).");
-		ImGui::SameLine();
-		if (ImGui::Button("Save", ImVec2(bw * 0.6f, 0))) MenuUI::Save();
-		Tip("Writes all settings, including these colors, to your settings file.");
-		ImGui::SameLine();
-		if (ImGui::Button("Revert", ImVec2(bw * 0.6f, 0))) Revert();
-		Tip("Discards every unsaved change and goes back to the last saved settings.");
+		ImGui::TextDisabled("Save and Revert are in the bar at the top.");
+		ImGui::EndChild();
+	}
+
+	// ---- Keybinds page: every setting that holds a DirectInput scancode. Rebind captures the next key press from the
+	// same DirectInput snapshot the game reads, so the stored numbers are exactly what the settings expect.
+	struct Binding { const char* group; const char* section; const char* key; const char* tip; bool canClear; };
+	const Binding kBindings[] = {
+		{ "Menu", "Main.Menu.Keys", "KeyEnable", "Opens and closes this menu.", false },	// 0 would lock the menu away
+		{ "Menu", "Main.Menu.Keys", "KeyLocations", "Opens and closes the Locations window.", true },
+		{ "Menu", "Main.Menu.Keys", "KeySave", "Saves the settings while the menu is open.", true },
+		{ "Occlusion culling", "Main.Main.Occlusion", "ToggleKey", "Turns occlusion culling on and off while you play.", true },
+		{ "Occlusion culling", "Main.Main.OcclusionTuning", "CompareKey", "With DevTools: switches one occlusion feature at a time.", true },
+		{ "Tools", "Main.Main.Misc", "ScreenshotKey", "Screenshot without the HUD (saved as jpg).", true },
+		{ "Tools", "Main.Develop.Main", "TraceShaders", "With DebugMode: prints the used shaders to the log.", true },
+		{ "Tools", "Main.FlyCam.Main", "KeyAdd", "Fly camera: raise the speed step.", true },
+		{ "Tools", "Main.FlyCam.Main", "KeySubtract", "Fly camera: lower the speed step.", true },
+	};
+	constexpr int kBindingCount = (int)(sizeof(kBindings) / sizeof(kBindings[0]));
+	int gRebind = -1;	// binding waiting for a key
+
+	int BindingValue(const Binding& b) {
+		ConfigNode n;
+		return Data().FillNode(n, b.section, b.key) ? atoi(n.Value) : 0;
+	}
+
+	int BindingDefault(const Binding& b) {
+		ConfigNode n;
+		std::string d;
+		if (!Data().FillNode(n, b.section, b.key) || !Data().DefaultValue(n, false, d)) return 0;
+		return atoi(d.c_str());
+	}
+
+	void SetBinding(const Binding& b, int value) {
+		ConfigNode n;
+		if (!Data().FillNode(n, b.section, b.key)) return;
+		snprintf(n.Value, sizeof(n.Value), "%d", value);
+		Data().SetSetting(n);
+		gNeedLoad = true;
+	}
+
+	void StopRebind() {
+		if (gRebind >= 0) Data().CancelKeyCapture();
+		gRebind = -1;
+	}
+
+	void DrawKeybinds() {
+		if (gRebind >= 0) {
+			const int k = Data().PollCapturedKey();
+			if (k >= 0) {
+				if (k != 1) SetBinding(kBindings[gRebind], k);	// 1 = Esc: cancel
+				gRebind = -1;
+			}
+		}
+
+		MenuWidgets::PageHeader("Keybinds", "Rebind, then press the new key (Esc cancels). Keys apply at once; Save keeps them.");
+		ImGui::Spacing();
+		ImGui::BeginChild("##scroll", ImVec2(0, 0), ImGuiChildFlags_None);
+
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float s = MenuBackend::Scale();
+		const float btnPad = style.FramePadding.x * 2.0f + 8.0f * s;
+		const float rebindW = ImGui::CalcTextSize("Rebind").x + btnPad;
+		const float clearW = ImGui::CalcTextSize("Clear").x + btnPad;
+		const float resetW = ImGui::CalcTextSize("Reset").x + btnPad;
+		float nameW = 0.0f;
+		for (const Binding& b : kBindings) nameW = std::max(nameW, ImGui::CalcTextSize(b.key).x);
+
+		int value[kBindingCount];
+		for (int i = 0; i < kBindingCount; i++) value[i] = BindingValue(kBindings[i]);
+
+		const char* group = "";
+		for (int i = 0; i < kBindingCount; i++) {
+			const Binding& b = kBindings[i];
+			if (strcmp(group, b.group)) {
+				group = b.group;
+				ImGui::SeparatorText(group);
+			}
+			const bool capturing = gRebind == i;
+			const int def = BindingDefault(b);
+			ImGui::PushID(i);
+
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextUnformatted(b.key);
+			ImGui::SameLine(nameW + 28.0f * s);
+
+			// key name
+			ImGui::AlignTextToFramePadding();
+			const float keyX = nameW + 28.0f * s;
+			const float keyW = 150.0f * s;
+			if (capturing) ImGui::TextColored(MenuTheme::Accent(), "Press a key...");
+			else if (value[i] == 0) { ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted()); ImGui::TextUnformatted("None"); ImGui::PopStyleColor(); }
+			else ImGui::Text("%s", Data().KeyName(value[i]).c_str());
+			ImGui::SameLine(keyX + keyW);
+			if (!capturing && value[i] != 0) {
+				ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
+				ImGui::Text("(%d)", value[i]);
+				ImGui::PopStyleColor();
+				ImGui::SameLine(keyX + keyW + 56.0f * s);
+			}
+			else ImGui::SameLine(keyX + keyW + 56.0f * s);
+
+			// buttons
+			if (capturing) {
+				if (ImGui::Button("Cancel", ImVec2(rebindW, 0))) StopRebind();
+			}
+			else if (ImGui::Button("Rebind", ImVec2(rebindW, 0))) {
+				StopRebind();
+				gRebind = i;
+				Data().BeginKeyCapture();
+			}
+			Tip(std::string(b.tip) + "\n\nSetting: " + b.section + "." + b.key);
+			ImGui::SameLine();
+			ImGui::BeginDisabled(!b.canClear || value[i] == 0 || capturing);
+			if (ImGui::Button("Clear", ImVec2(clearW, 0))) SetBinding(b, 0);
+			ImGui::EndDisabled();
+			Tip(b.canClear ? "Unbind this key (0)." : "This key cannot be cleared: without it the menu could not be opened.");
+			ImGui::SameLine();
+			ImGui::BeginDisabled(value[i] == def || capturing);
+			if (ImGui::Button("Reset", ImVec2(resetW, 0))) SetBinding(b, def);
+			ImGui::EndDisabled();
+			Tip("Back to the default: " + (def ? Data().KeyName(def) : std::string("None")));
+
+			// the same key on another binding: allowed, but said out loud
+			std::string also;
+			if (value[i] != 0)
+				for (int j = 0; j < kBindingCount; j++)
+					if (j != i && value[j] == value[i]) also += (also.empty() ? "" : ", ") + std::string(kBindings[j].key);
+			if (!also.empty()) {
+				ImGui::SameLine();
+				ImGui::AlignTextToFramePadding();
+				ImGui::TextColored(MenuTheme::Warning(), "Also used by %s", also.c_str());
+				Tip("Both bindings react to this key. That is allowed, but usually not what you want.");
+			}
+			ImGui::PopID();
+		}
 		ImGui::EndChild();
 	}
 
@@ -692,55 +766,51 @@ namespace {
 		ImGui::Spacing();
 		ImGui::BeginChild("##scroll", ImVec2(0, 0), ImGuiChildFlags_None);
 
-		for (size_t i = 0; i < gModel.tables.size(); i++) DrawTable(gModel.tables[i], (int)i, false);
-
-		ImGui::SeparatorText("Timings (ms per frame)");
-		struct Row { std::string name; float update, render, total; };
-		std::vector<Row> rows;
-		for (const Category& c : gCategories) {
-			if (c.name != "Shaders") continue;
-			for (const Item& i : c.items) {
-				EffectRecord* e = TheShaderManager->GetEffectByName(i.name.c_str());
-				if (!e || !e->Enabled) continue;
-				float update = std::max(e->constantUpdateTime, 0.0f);
-				float render = std::max(e->renderTime, 0.0f);
-				// the sun, point and shadow map passes are drawn for the shadow effects
-				if ((e == TheShaderManager->Effects.ShadowsExteriors && TheShaderManager->GameState.isExterior) ||
-					(e == TheShaderManager->Effects.ShadowsInteriors && !TheShaderManager->GameState.isExterior)) {
-					render += TheShaderManager->Effects.PointShadows->renderTime + TheShaderManager->Effects.PointShadows2->renderTime +
-						TheShaderManager->Effects.SunShadows->renderTime + TheShadowManager->shadowMapsRenderTime;
-				}
-				if (!TheSettingManager->SettingsMain.Main.RenderEffects) render = 0;
-				rows.push_back({ i.name, update, render, update + render });
+		for (size_t i = 0; i < gModel.tables.size(); i++) {
+			DrawTable(gModel.tables[i], (int)i, false);
+			if (gModel.tables[i].title == "Occlusion culling") {	// state of the built-in module (Enabled and the Throttle switches need a restart)
+				ImGui::TextDisabled("%s Enabled needs a restart; the other rows apply at once.", Data().OcclusionStatus().c_str());
 			}
 		}
-		std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.total > b.total; });
 
-		if (ImGui::BeginTable("##timings", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
-			ImGui::TableSetupColumn("Effect", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-			ImGui::TableSetupColumn("Constants", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-			ImGui::TableSetupColumn("Render", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-			ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+		ImGui::SeparatorText("Timings (ms per frame)");
+		std::vector<MenuTiming> rows;
+		float shadowMaps = 0;
+		Data().Timings(rows, shadowMaps);
+		std::sort(rows.begin(), rows.end(), [](const MenuTiming& a, const MenuTiming& b) { return a.total > b.total; });
+
+		if (ImGui::BeginTable("##timings", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX)) {
+			const float numW = ImGui::CalcTextSize("0.0000").x + ImGui::GetStyle().CellPadding.x * 2.0f + 28.0f * MenuBackend::Scale();
+			ImGui::TableSetupColumn("Effect", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+			ImGui::TableSetupColumn("Constants", ImGuiTableColumnFlags_WidthFixed, numW);
+			ImGui::TableSetupColumn("Render", ImGuiTableColumnFlags_WidthFixed, numW);
+			ImGui::TableSetupColumn("Total", ImGuiTableColumnFlags_WidthFixed, numW);
 			ImGui::TableHeadersRow();
+			auto num = [](float v) {
+				char buf[24];
+				snprintf(buf, sizeof(buf), "%.4f", v);
+				ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(buf).x));
+				ImGui::TextUnformatted(buf);
+			};
 			float sum = 0;
-			for (const Row& r : rows) {
+			for (const MenuTiming& r : rows) {
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn(); ImGui::TextUnformatted(r.name.c_str());
-				ImGui::TableNextColumn(); ImGui::Text("%.4f", r.update);
-				ImGui::TableNextColumn(); ImGui::Text("%.4f", r.render);
-				ImGui::TableNextColumn(); ImGui::Text("%.4f", r.total);
+				ImGui::TableNextColumn(); num(r.update);
+				ImGui::TableNextColumn(); num(r.render);
+				ImGui::TableNextColumn(); num(r.total);
 				sum += r.total;
 			}
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); ImGui::TextColored(MenuTheme::Accent(), "Shadow maps");
-			ImGui::TableNextColumn(); ImGui::TextUnformatted("");
-			ImGui::TableNextColumn(); ImGui::Text("%.4f", TheShadowManager->shadowMapsRenderTime);
-			ImGui::TableNextColumn(); ImGui::Text("%.4f", TheShadowManager->shadowMapsRenderTime);
+			ImGui::TableNextColumn();
+			ImGui::TableNextColumn(); num(shadowMaps);
+			ImGui::TableNextColumn(); num(shadowMaps);
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); ImGui::TextColored(MenuTheme::Accent(), "Sum of the above");
-			ImGui::TableNextColumn(); ImGui::TextUnformatted("");
-			ImGui::TableNextColumn(); ImGui::TextUnformatted("");
-			ImGui::TableNextColumn(); ImGui::Text("%.4f", sum);
+			ImGui::TableNextColumn();
+			ImGui::TableNextColumn();
+			ImGui::TableNextColumn(); num(sum);
 			ImGui::EndTable();
 		}
 		ImGui::EndChild();
@@ -753,19 +823,22 @@ namespace {
 		ImGui::PushID(item.path.c_str());
 		bool clicked = false;
 
-		const float switchW = ImGui::GetFrameHeight() * 0.80f * 1.8f;
+		const float switchW = MenuWidgets::ToggleSwitchWidth();
 		const float rowW = ImGui::GetContentRegionAvail().x;
+		const float pad = ImGui::GetStyle().FramePadding.x + 2.0f;
 
+		const float x0 = ImGui::GetCursorPosX();	// SameLine offsets count from the window edge, not from the padding
 		ImGui::SetNextItemAllowOverlap();
-		if (ImGui::Selectable(("##row"), selected, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetFrameHeight()))) clicked = true;
+		if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetFrameHeight()))) clicked = true;
 		const ImVec2 after = ImGui::GetCursorPos();
 
-		ImGui::SameLine(ImGui::GetStyle().FramePadding.x + 2.0f);
+		ImGui::SameLine(x0 + pad);
 		ImGui::AlignTextToFramePadding();
-		ImGui::TextUnformatted(item.name.c_str());
+		const float textW = rowW - pad - 4.0f - (showSwitch ? switchW + ImGui::GetStyle().ItemSpacing.x : 0.0f);
+		if (MenuWidgets::Ellipsized(item.name, textW)) Tip(item.name);
 
 		if (showSwitch) {
-			ImGui::SameLine(rowW - switchW - 2.0f);
+			ImGui::SameLine(x0 + rowW - switchW - 2.0f);
 			bool on = IsShaderEnabledCached(item.name);
 			if (ToggleSwitch("##sw", &on)) SwitchShader(item.name);
 		}
@@ -776,11 +849,10 @@ namespace {
 	}
 
 	void DrawSidebar() {
-		ImGui::SetNextItemWidth(-FLT_MIN);
-		ImGui::InputTextWithHint("##search", "Search settings", gSearch, sizeof(gSearch));
-		ImGui::Spacing();
-
-		ImGui::BeginChild("##list", ImVec2(0, 0), ImGuiChildFlags_None);
+		const ImGuiStyle& style = ImGui::GetStyle();
+		// The three general pages stay in a footer so they never scroll away.
+		const float footerH = ImGui::GetFrameHeight() * 4.0f + style.ItemSpacing.y * 4.0f + 2.0f;
+		ImGui::BeginChild("##list", ImVec2(0, -footerH), ImGuiChildFlags_None);
 
 		const std::string q = Lower(gSearch);
 		if (!q.empty()) {
@@ -795,10 +867,10 @@ namespace {
 					if (!match) continue;
 					any = true;
 					ImGui::PushID(i.path.c_str());
-					if (ImGui::Selectable(("##r"), gSelected == i.path, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetFrameHeight() * 1.6f))) Select(i.path);
-					ImGui::SameLine(ImGui::GetStyle().FramePadding.x + 2.0f);
+					if (ImGui::Selectable("##r", gSelected == i.path, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetFrameHeight() * 1.6f))) Select(i.path);
+					ImGui::SameLine(style.FramePadding.x + 2.0f);
 					ImGui::BeginGroup();
-					ImGui::TextUnformatted(i.name.c_str());
+					MenuWidgets::Ellipsized(i.name, ImGui::GetContentRegionAvail().x - 4.0f);
 					ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
 					ImGui::TextUnformatted(c.name.c_str());
 					ImGui::PopStyleColor();
@@ -811,54 +883,34 @@ namespace {
 				ImGui::TextUnformatted("Nothing found.");
 				ImGui::PopStyleColor();
 			}
-			ImGui::EndChild();
-			return;
 		}
-
-		for (const Category& c : gCategories) {
-			ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-			ImGui::PushFont(MenuBackend::FontSemiBold());
-			const bool open = ImGui::CollapsingHeader(c.name.c_str());
-			ImGui::PopFont();
-			if (!open) continue;
-			for (const Item& i : c.items) DrawItemRow(i, i.isShader);
-			ImGui::Spacing();
+		else {
+			for (const Category& c : gCategories) {
+				ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+				ImGui::PushFont(MenuBackend::FontSemiBold());
+				const bool open = ImGui::CollapsingHeader(c.name.c_str());
+				ImGui::PopFont();
+				if (!open) continue;
+				for (const Item& i : c.items) DrawItemRow(i, i.isShader);
+				ImGui::Spacing();
+			}
 		}
-
-		ImGui::PushFont(MenuBackend::FontSemiBold());
-		const bool openPerf = ImGui::CollapsingHeader("Performance", ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_Bullet | (gSelected == kPerformance ? ImGuiTreeNodeFlags_Selected : 0));
-		ImGui::PopFont();
-		if (ImGui::IsItemClicked()) Select(kPerformance);
-		(void)openPerf;
-
-		ImGui::PushFont(MenuBackend::FontSemiBold());
-		ImGui::CollapsingHeader("Locations", ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_Bullet | (gSelected == kLocations ? ImGuiTreeNodeFlags_Selected : 0));
-		ImGui::PopFont();
-		if (ImGui::IsItemClicked()) Select(kLocations);
-
-		ImGui::PushFont(MenuBackend::FontSemiBold());
-		ImGui::CollapsingHeader("Style", ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_Bullet | (gSelected == kStyle ? ImGuiTreeNodeFlags_Selected : 0));
-		ImGui::PopFont();
-		if (ImGui::IsItemClicked()) Select(kStyle);
-
-		if (TheSettingManager->SettingsMain.Locations.PresetEditor) {
-			ImGui::PushFont(MenuBackend::FontSemiBold());
-			ImGui::CollapsingHeader("Presets", ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_Bullet | (gSelected == kPresets ? ImGuiTreeNodeFlags_Selected : 0));
-			ImGui::PopFont();
-			if (ImGui::IsItemClicked()) Select(kPresets);
-		}
-
 		ImGui::EndChild();
+
+		ImGui::Separator();
+		static const Item pinned[4] = {
+			{ kPerformance, "Performance", false, false },
+			{ kLocations, "Locations", false, false },
+			{ kKeybinds, "Keybinds", false, false },
+			{ kStyle, "Style", false, false },
+		};
+		for (const Item& i : pinned) DrawItemRow(i, false);
 	}
 
 	void Revert() {
-		TheSettingManager->Config.Init();
-		for (const std::string& name : gToggledShaders) TheShaderManager->SwitchShaderStatus(name.c_str()); // puts the live effect back
+		Data().Revert(gToggledShaders);
 		gToggledShaders.clear();
-		TheSettingManager->LoadSettings();
-		TheSettingManager->hasUnsavedChanges = false;
 		gNeedLoad = false;
-		MenuBackend::RequestStyleRefresh();
 		gModelDirty = true;
 		gEditId.clear();
 		RefreshShaderCache();
@@ -867,16 +919,85 @@ namespace {
 }
 
 void MenuUI::Save() {
-	TheSettingManager->SaveSettings();
+	Data().Save();
 	gToggledShaders.clear();
-	InterfaceManager->ShowMessage("Settings saved.");
+}
+
+void MenuUI::BeginRebind(const char* key) {
+	Select(kKeybinds);
+	for (int i = 0; i < kBindingCount; i++)
+		if (!strcmp(kBindings[i].key, key)) { StopRebind(); gRebind = i; Data().BeginKeyCapture(); }
+}
+
+void MenuUI::SelectPage(const char* path) {
+	Select(path);
 }
 
 void MenuUI::OnOpened() {
+	StopRebind();
 	gBuilt = false;
 	gModelDirty = true;
 	gEditId.clear();
 	if (gSelected.empty()) gSelected = "";
+}
+
+namespace {
+	// Fixed bar across the top: title, search, unsaved indicator, Revert and Save (always there, greyed out when
+	// nothing changed), so the body below never changes size.
+	void DrawHeaderBar(bool unsaved) {
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float s = MenuBackend::Scale();
+		const float barH = ImGui::GetFrameHeight() + style.WindowPadding.y * 2.0f;
+		ImGui::BeginChild("##hdr", ImVec2(0, barH), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+		ImGui::AlignTextToFramePadding();
+		ImGui::PushFont(MenuBackend::FontSemiBold());
+		ImGui::TextUnformatted("Settings");
+		ImGui::PopFont();
+
+		const float total = ImGui::GetContentRegionMax().x;
+		const float bw = std::max(ImGui::CalcTextSize("Revert").x, ImGui::CalcTextSize("Save").x) + style.FramePadding.x * 2.0f + 24.0f * s;
+		const char* unsavedText = "Unsaved changes";
+		const float dotW = ImGui::GetFontSize() * 0.9f;
+		const float unsavedW = dotW + ImGui::CalcTextSize(unsavedText).x;
+		const float right = bw * 2.0f + style.ItemSpacing.x + (unsaved ? unsavedW + style.ItemSpacing.x * 2.0f : 0.0f);
+
+		ImGui::SameLine(0.0f, 28.0f * s);
+		const float searchW = std::max(120.0f * s, std::min(320.0f * s, total - ImGui::GetCursorPosX() - right - 20.0f * s));
+		ImGui::SetNextItemWidth(searchW);
+		ImGui::InputTextWithHint("##search", "Search settings", gSearch, sizeof(gSearch));
+
+		ImGui::SameLine(total - right);
+		if (unsaved) {
+			const ImVec2 p = ImGui::GetCursorScreenPos();
+			ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + dotW * 0.4f, p.y + ImGui::GetFrameHeight() * 0.5f), dotW * 0.22f, ImGui::GetColorU32(MenuTheme::Warning()));
+			ImGui::Dummy(ImVec2(dotW, 0));
+			ImGui::SameLine(0, 0);
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextColored(MenuTheme::Warning(), "%s", unsavedText);
+			MenuWidgets::Tip("Unsaved changes are lost when the game closes.");
+			ImGui::SameLine(0, style.ItemSpacing.x * 2.0f);
+		}
+		const char* labels[2] = { "Revert", "Save" };
+		const bool enabled[2] = { unsaved, unsaved };
+		// two fixed-width buttons at the right end
+		for (int i = 0; i < 2; i++) {
+			if (i) ImGui::SameLine();
+			ImGui::BeginDisabled(!enabled[i]);
+			if (i == 1) {
+				ImGui::PushStyleColor(ImGuiCol_Button, MenuTheme::AccentDim());
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered, MenuTheme::Accent());
+				ImGui::PushStyleColor(ImGuiCol_ButtonActive, MenuTheme::Accent());
+			}
+			if (ImGui::Button(labels[i], ImVec2(bw, 0))) { if (i == 0) Revert(); else MenuUI::Save(); }
+			if (i == 1) ImGui::PopStyleColor(3);
+			ImGui::EndDisabled();
+			MenuWidgets::Tip(i == 0 ? "Discards every unsaved change and goes back to the last saved settings." : "Writes all settings to your settings file.");
+		}
+		ImGui::EndChild();
+	}
+
+	float gSideUnits = 260.0f;	// sidebar width at 1080p, kept across frames (the splitter changes it)
 }
 
 void MenuUI::Draw() {
@@ -891,64 +1012,43 @@ void MenuUI::Draw() {
 	const float s = MenuBackend::Scale();
 
 	// Escape closes the menu unless a text field is in use.
-	if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !io.WantTextInput && gEditId.empty()) {
-		TheGameMenuManager->Enabled = false;
+	if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !io.WantTextInput && gEditId.empty() && !Data().KeyCaptureActive()) {
+		Data().CloseMenu();
 		return;
 	}
 
 	ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-	ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.60f, io.DisplaySize.y * 0.72f), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowSizeConstraints(ImVec2(640.0f * s, 420.0f * s), ImVec2(io.DisplaySize.x, io.DisplaySize.y));
+	ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.70f, io.DisplaySize.y * 0.80f), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSizeConstraints(ImVec2(std::min(900.0f * s, io.DisplaySize.x), std::min(560.0f * s, io.DisplaySize.y)), ImVec2(io.DisplaySize.x, io.DisplaySize.y));
 
-	ImGui::Begin(TitleMenu, nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+	ImGui::Begin("New Vegas Reloaded - Settings", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
-	const ImGuiStyle& style = ImGui::GetStyle();
-	const bool unsaved = TheSettingManager->hasUnsavedChanges;
-	const float barH = ImGui::GetFrameHeight() + style.WindowPadding.y * 2.0f;
+	DrawHeaderBar(Data().HasUnsaved());
+
 	const ImVec2 avail = ImGui::GetContentRegionAvail();
-	const float bodyH = avail.y - (unsaved ? barH + style.ItemSpacing.y : 0.0f);
-	const float sideW = std::max(230.0f * s, avail.x * 0.27f);
+	const float maxSide = std::max(120.0f, std::min(420.0f * s, avail.x * 0.5f));
+	const float minSide = std::min(200.0f * s, maxSide);
+	float sideW = std::max(minSide, std::min(maxSide, gSideUnits * s));
 
-	ImGui::BeginChild("##side", ImVec2(sideW, bodyH), ImGuiChildFlags_AlwaysUseWindowPadding);
+	ImGui::BeginChild("##side", ImVec2(sideW, avail.y), ImGuiChildFlags_AlwaysUseWindowPadding);
 	DrawSidebar();
 	ImGui::EndChild();
 
-	ImGui::SameLine();
-	ImGui::BeginChild("##content", ImVec2(0, bodyH), ImGuiChildFlags_AlwaysUseWindowPadding);
+	if (MenuWidgets::SplitterV("##split", &sideW, minSide, maxSide, avail.y)) gSideUnits = sideW / s;
+
+	ImGui::BeginChild("##content", ImVec2(0, avail.y), ImGuiChildFlags_AlwaysUseWindowPadding);
 	if (gSelected == kPerformance) DrawPerformance();
 	else if (gSelected == kLocations) DrawLocations();
-	else if (gSelected == kPresets) PresetsPage::Draw();
+	else if (gSelected == kKeybinds) DrawKeybinds();
 	else if (gSelected == kStyle) DrawStyle();
 	else if (!gSelected.empty()) DrawItem();
 	ImGui::EndChild();
-
-	if (unsaved) {
-		ImGui::BeginChild("##bar", ImVec2(0, barH), ImGuiChildFlags_AlwaysUseWindowPadding);
-		ImGui::AlignTextToFramePadding();
-		ImGui::TextColored(MenuTheme::Warning(), "You have unsaved changes.");
-		ImGui::SameLine();
-		ImGui::PushStyleColor(ImGuiCol_Text, MenuTheme::Muted());
-		ImGui::TextUnformatted("Unsaved changes are lost when the game closes.");
-		ImGui::PopStyleColor();
-
-		const float bw = 90.0f * s;
-		ImGui::SameLine(ImGui::GetContentRegionMax().x - bw * 2.0f - style.ItemSpacing.x);
-		if (ImGui::Button("Revert", ImVec2(bw, 0))) Revert();
-		ImGui::SameLine();
-		ImGui::PushStyleColor(ImGuiCol_Button, MenuTheme::AccentDim());
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, MenuTheme::Accent());
-		ImGui::PushStyleColor(ImGuiCol_ButtonActive, MenuTheme::Accent());
-		if (ImGui::Button("Save", ImVec2(bw, 0))) MenuUI::Save();
-		ImGui::PopStyleColor(3);
-		ImGui::EndChild();
-	}
 
 	ImGui::End();
 
 	// Apply the values written this frame once (rebuilds the settings structs the effects read).
 	if (gNeedLoad) {
-		TheSettingManager->LoadSettings();
+		Data().ApplyChanges();
 		gNeedLoad = false;
-		MenuBackend::RequestStyleRefresh(); // menu colors may have changed
 	}
 }

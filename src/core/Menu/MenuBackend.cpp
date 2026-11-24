@@ -114,7 +114,7 @@ bool MenuBackend::BeginFrame(bool menuOpen) {
 
 	ImGui_ImplDX9_NewFrame();
 	ImGui_ImplWin32_NewFrame();
-	if (menuOpen) MenuInput::FeedMouse(); // after the backend's GetCursorPos fallback, so the menu's cursor wins
+	if (menuOpen) MenuInput::FeedInput(); // after the backend's GetCursorPos fallback, so the menu's cursor wins
 	ImGui::NewFrame();
 	return true;
 }

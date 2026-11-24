@@ -5,6 +5,7 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainExtraData", &Constants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxData", &ParallaxConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
+	TheShaderManager->RegisterConstant("TESR_TerrainParallaxIso", &ParallaxIso);
 }
 
 
@@ -42,6 +43,9 @@ void TerrainShaders::UpdateSettings() {
 	ParallaxSettings.MaxDistance = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "MaxDistance");
 	ParallaxSettings.Height = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "Height");
 	ParallaxSettings.ShadowsIntensity = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "ShadowsIntensity");
+	ParallaxSettings.IsoHeightTaps = TheSettingManager->GetSettingI("Main.Main.Performance", "IsoHeightTaps");
+	ParallaxSettings.SkipEmptyLayers = TheSettingManager->GetSettingI("Main.Main.Performance", "SkipEmptyLayers");
+	ParallaxSettings.Lite = TheSettingManager->GetSettingI("Main.Main.Performance", "ParallaxLite");
 
 	LODSettings.NoiseScale = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseScale");
 	LODSettings.NoiseTile = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseTile");
@@ -74,7 +78,9 @@ void TerrainShaders::UpdateConstants() {
 	ParallaxConstants.Data.x = ParallaxSettings.Enabled;
 	ParallaxConstants.Data.y = ParallaxSettings.Shadows;
 	ParallaxConstants.Data.z = ParallaxSettings.HeightBlend;
-	ParallaxConstants.Data.w = ParallaxSettings.HighQuality;
+	ParallaxConstants.Data.w = ParallaxSettings.Lite ? 2.0f : (ParallaxSettings.HighQuality ? 1.0f : 0.0f);	// 0 8 steps, 1 HighQuality, 2 ParallaxLite
+	ParallaxIso.x = ParallaxSettings.IsoHeightTaps ? 1.0f : 0.0f;
+	ParallaxIso.y = ParallaxSettings.SkipEmptyLayers ? 1.0f : 0.0f;
 
 	ParallaxConstants.ExtraData.x = ParallaxSettings.MaxDistance;
 	ParallaxConstants.ExtraData.y = ParallaxSettings.Height;

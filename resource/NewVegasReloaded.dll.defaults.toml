@@ -70,7 +70,54 @@ PartialShadowAtlasUpdate = true # Same picture: on frames where the far (LOD) su
 BatchScriptSettings = true  # Same picture: scripts that set many NVR values on a cell change (Cartographer.esp) cost one settings rebuild per frame instead of one per value. false = the 4.4.1 behavior (rebuild on every call).
 SharedShadowWalk = true     # Same picture: the sun shadow cascades share one pass over the cells' objects (their scene-graph nodes and form checks) instead of each redoing it. false = the original path.
 PerformancePreset = true    # ON (default) = trades small picture losses for FPS (smaller/shorter sun and lamp shadows, see [_Preset.Performance.*] below). Your own values are not touched: turn it off for the full 4.4.1 picture and they are back. Overridden rows are greyed out in the menu.
+SkipEmptyLayers = true      # Same picture (identical up to rounding): terrain layers whose blend weight is exactly 0 skip their texture lookups. Port of Vegas Shaders (adeesababa).
+IsoHeightTaps = true        # Picture: parallax height lookups on terrain use one isotropic footprint instead of the real gradients (fewer taps; a little more flicker below the frame). On by default. Port of Vegas Shaders (adeesababa).
+ParallaxLite = true         # Picture: cheaper parallax on terrain and objects (fewer steps, a secant step instead of the contact refinement, two shadow taps instead of four, a smoother fade-out). On by default. Port of Vegas Shaders (adeesababa).
+HiddenObjectCulling = true  # Picture: the extra lamp-only passes of objects that drew 0 pixels a few frames ago are skipped (they can show up a few frames late when turning a corner). Fewer draw calls in lamp-lit interiors; adds little when [_Main.Main.Occlusion] is on. Needs a restart to switch on. Port of Vegas Shaders (adeesababa).
+HiddenObjectCullingMaxAge = 4 # Oldest occlusion answer, in frames (1-7), that may still count for HiddenObjectCulling.
 DedicatedGodRays = true     # Same picture: god rays work in their own half-resolution buffers (the resolution they always used) instead of a corner of full-size ones, without the copies. false = the original path.
+
+[_Main.Main.Occlusion]
+Enabled = true              # Built-in occlusion culling (port of Conor's Occlusion Culling plugin, mrfury97, GPL-3.0). Big objects, land, grass, trees, NPCs and doors that the graphics card proves are fully covered by what is already drawn are not drawn in the main view: fewer draw calls. Shadows, reflections and the HUD maps are never touched. Needs a restart. Skipped (and logged) when the standalone OcclusionCulling.dll is loaded.
+Culling = true              # Start with hiding on (false = measuring only). ToggleKey switches it while you play.
+ToggleKey = 210             # On/off key while playing, DirectInput scancode: 210 = Insert, 199 = Home, 207 = End (our menu key), 211 = Delete (our Locations key), 0 = none. A message in the corner says ON or OFF.
+AnimThrottle = false        # Picture/behaviour: NPCs the main view does not draw (behind cover or outside the view, 512+ units away) update their bone positions every 2nd frame (AnimInterval). Animations, AI and movement still run every frame; their shadows can lag a frame. Off here (the original plugin has it on).
+ParticleThrottle = false    # Behaviour: particle systems (fire, smoke, steam) on objects behind cover or outside the view, 512+ units away, are stepped every 3rd frame (ParticleInterval); the skipped time is caught up. Off here (the original plugin has it on).
+MaxQueriesPerFrame = 500    # Occlusion tests issued per frame at most. More = hides faster, a little more GPU work.
+MaxAnswerAge = 4            # Oldest test answer, in frames, that may still count.
+
+[_Main.Main.OcclusionTuning]
+# The rest of the original plugin's INI keys (same defaults, except where noted). Applied at once when changed; DevTools needs a restart.
+MinRadius = 150.0           # Objects smaller than this radius (game units) are never tested. Lower it (e.g. 75) to also hide smaller clutter; more tests per frame.
+NearDistance = 400.0        # Objects whose box is closer to the camera than this are never tested.
+DistantLOD = false          # Also test distant LOD objects (the far, low-detail copies of buildings and rocks; about 200 per frame outdoors).
+Imposters = true            # Imposters (references the game shows at any distance) are tested too.
+VisibleRetestFrames = 4     # A visible object is tested again only every this many frames (1-16); covered and new objects are tested first.
+GuardDegreesPerFrame = 2.5  # An answer is not used after the camera turned more than this many degrees per frame of the answer's age.
+GuardUnitsPerFrame = 32.0   # ... or moved more than this many units per frame of age.
+RevealDepth = 150.0         # Pop-in when stepping out from behind a wall: while the camera moves, test boxes of hidden things grow on screen by how far the move slides an edge this many units away. Lower = grows more. 0 = off.
+ScreenPadPixels = 1.5       # Every test box reaches at least this many pixels past its object on screen (TAA/DLSS jitter). 0 = off.
+LandCulling = true          # Land quadrants (each cell's ground in four 2048-unit squares) are tested and hidden when proven covered.
+LandMargin = 32.0           # Game units added above and below a land quadrant's height range.
+TerrainLOD = true           # Distant terrain LOD chunks are tested and hidden the same way.
+GrassCulling = true         # Grass groups are tested and hidden when proven covered.
+GrassMargin = 32.0          # Game units added around a grass group's box (blades sway in the wind).
+LampCulling = false         # Each lamp's reach is tested; true = a lamp with no visible pixel in its reach is also switched off for the main view. false = only counted in the log.
+ActorCulling = true         # NPCs and creatures (never the player) are tested and hidden when proven covered (animation, AI and their shadows go on as normal).
+ActorMargin = 24.0          # Margin around an actor's bound, game units (plus 10% of its size).
+AnimInterval = 2            # AnimThrottle: update every this many frames (1 = off).
+AnimNearDistance = 512.0    # AnimThrottle: closer actors always update every frame.
+ParticleInterval = 3        # ParticleThrottle: step every this many frames (1 = off).
+ParticleNearDistance = 512.0 # ParticleThrottle: closer particle systems always update every frame.
+ActivatorCulling = true     # Doors, activators, talking activators and terminals are tested and hidden when proven covered.
+ActivatorMargin = 16.0      # Margin around their bound, game units (plus 5% of their size).
+TreeCulling = true          # SpeedTree trees and shrubs are tested and hidden when proven covered.
+TreeMargin = 32.0           # Room around a tree's bound for its leaf cards, game units (plus 20% of its size).
+OrientedBoxes = true        # Tighter boxes from each shape's own vertices, along the object's own rotation: found covered more often.
+DevTools = false            # Developer tools: a block of numbers (frame time with hiding on and off, tests, hidden counts) in NewVegasReloaded.log every LogInterval frames, the compare key and debug boxes. Needs a restart.
+CompareKey = 0              # With DevTools: switches one feature at a time (as set -> land -> grass -> throttles -> as set); the log starts a new block at each press. 0 = none. (The original default 207 = End is our menu key.)
+LogInterval = 600           # With DevTools: frames of world view per block of numbers in the log.
+DebugBoxes = false          # With DevTools: draw the tested boxes (green = visible, red = hidden; NPCs cyan/magenta).
 
 [_Main.Main.Precipitations]
 RemovePrecipitations = false   # Disables vanilla rain and other precipitations.
@@ -96,6 +143,7 @@ StartupLog = false      # Debug: log each startup step ([Startup] lines, with ti
 [_Main.Menu.Keys]
 KeyEnable = 207             # Keycode for the hotkey that opens and closes the menu.
 KeySave = 28                # Keycode for the hotkey to save changes done in the menu (if not used, will revert upon restart).
+KeyLocations = 211          # Keycode for the hotkey that opens and closes the Locations window (preset manager, teleport). Default 211 = Delete.
 
 [_Main.Menu.Style]
 AccentColor = '40,140,255'        # Accent color of the menu: checkmarks, sliders, selection, highlights (red,green,blue 0-255).
@@ -992,6 +1040,13 @@ RenderDistance = 60000               # Picture: contact shadows only near the ca
 
 [_Preset.Performance.Shaders.ShadowsExteriors.Ortho]
 Resolution = 1                       # Picture: coarser ortho map (256 instead of 512).
+
+[_Preset.Performance.Main.Main.Performance]
+IsoHeightTaps = true                 # Picture: terrain parallax height lookups use one isotropic footprint (cheaper, slightly more flicker).
+ParallaxLite = true                  # Picture: cheaper terrain and object parallax (fewer steps and shadow taps).
+
+[_Preset.Performance.Shaders.Terrain.Parallax]
+MaxDistance = 1024                   # Picture: terrain parallax ends sooner (2048 -> 1024).
 
 [_Preset.Performance.Shaders.ShadowsInteriors.Main]
 LightPoints = 6                      # Picture: at most 6 lamps cast shadows (12 -> 6). 6 or fewer lamps are one merged pass and half the cube maps.

@@ -1,0 +1,332 @@
+#pragma once
+// Engine-free helpers, shared with tests\math_test.cpp.
+
+#include <cmath>
+#include <cstdint>
+
+namespace OcclusionMath {
+
+	// D3D row-vector projection (clip = [x y z 1] * P): does NDC depth grow with view distance (standard: compare
+	// LESSEQUAL) or shrink (reversed: GREATEREQUAL)? p is the 4x4 matrix as 16 floats, row-major (_11.._44).
+	inline bool DepthGrowsWithDistance(const float* p) {
+		auto ndc = [&](float d) {
+			const float z = d * p[2 * 4 + 2] + p[3 * 4 + 2];
+			const float w = d * p[2 * 4 + 3] + p[3 * 4 + 3];
+			return w != 0.0f ? z / w : 0.0f;
+		};
+		return ndc(10000.0f) >= ndc(100.0f);
+	}
+
+	// Angle in degrees between two rotations (row-major 3x3): acos((trace(A^T B) - 1) / 2).
+	inline float RotationAngleDegrees(const float* a, const float* b) {
+		float trace = 0.0f;
+		for (int r = 0; r < 3; ++r)
+			for (int c = 0; c < 3; ++c) trace += a[r * 3 + c] * b[r * 3 + c];
+		float x = (trace - 1.0f) * 0.5f;
+		if (x > 1.0f) x = 1.0f;
+		if (x < -1.0f) x = -1.0f;
+		return std::acos(x) * 57.2957795f;
+	}
+
+	// The 36 corners (12 triangles) of an axis-aligned box, minus `origin` (the renderer draws camera-relative).
+	struct Vertex { float x, y, z; uint32_t color; };
+	inline void BoxTriangles(const float* mn, const float* mx, const float* origin, uint32_t color, Vertex* out) {
+		static const int corner[8][3] = { { 0, 0, 0 }, { 1, 0, 0 }, { 1, 1, 0 }, { 0, 1, 0 },
+		                                  { 0, 0, 1 }, { 1, 0, 1 }, { 1, 1, 1 }, { 0, 1, 1 } };
+		static const int tri[12][3] = { { 0, 2, 1 }, { 0, 3, 2 }, { 4, 5, 6 }, { 4, 6, 7 }, { 0, 1, 5 }, { 0, 5, 4 },
+		                                { 3, 6, 2 }, { 3, 7, 6 }, { 0, 4, 7 }, { 0, 7, 3 }, { 1, 2, 6 }, { 1, 6, 5 } };
+		for (int t = 0; t < 12; ++t)
+			for (int i = 0; i < 3; ++i) {
+				const int* c = corner[tri[t][i]];
+				out[t * 3 + i] = { (c[0] ? mx[0] : mn[0]) - origin[0], (c[1] ? mx[1] : mn[1]) - origin[1],
+				                   (c[2] ? mx[2] : mn[2]) - origin[2], color };
+			}
+	}
+
+	// Pre-transformed vertex (D3DFVF_XYZRHW | D3DFVF_DIFFUSE): viewport pixels, depth in [MinZ, MaxZ], 1 / w.
+	struct ScreenVertex { float x, y, z, rhw; uint32_t color; };
+
+	// Camera-relative points through view * projection (D3D row vectors, 16 floats each, row-major) into viewport pixels.
+	// False when any point is not in front of the camera (w <= 1 unit): such a box cannot be drawn pre-transformed.
+	inline bool ProjectToScreen(const Vertex* in, int count, const float* view, const float* proj, float vpX, float vpY,
+		float vpW, float vpH, float minZ, float maxZ, ScreenVertex* out) {
+		for (int k = 0; k < count; ++k) {
+			const float p[4] = { in[k].x, in[k].y, in[k].z, 1.0f };
+			float v[4], c[4];
+			for (int j = 0; j < 4; ++j) v[j] = p[0] * view[0 * 4 + j] + p[1] * view[1 * 4 + j] + p[2] * view[2 * 4 + j] + p[3] * view[3 * 4 + j];
+			for (int j = 0; j < 4; ++j) c[j] = v[0] * proj[0 * 4 + j] + v[1] * proj[1 * 4 + j] + v[2] * proj[2 * 4 + j] + v[3] * proj[3 * 4 + j];
+			if (!(c[3] > 1.0f)) return false;
+			const float iw = 1.0f / c[3];
+			out[k] = { vpX + (c[0] * iw * 0.5f + 0.5f) * vpW - 0.5f, vpY + (0.5f - c[1] * iw * 0.5f) * vpH - 0.5f,
+			           minZ + c[2] * iw * (maxZ - minZ), iw, in[k].color };
+		}
+		return true;
+	}
+
+	// A box's 8 corners, in the order BoxTriangles uses (bit 0 = x max, bit 1 = y max, bit 2 = z max as in kCorner).
+	static const int kCorner[8][3] = { { 0, 0, 0 }, { 1, 0, 0 }, { 1, 1, 0 }, { 0, 1, 0 },
+	                                   { 0, 0, 1 }, { 1, 0, 1 }, { 1, 1, 1 }, { 0, 1, 1 } };
+
+	inline void AxisCorners(const float* mn, const float* mx, float (*out)[3]) {
+		for (int k = 0; k < 8; ++k)
+			for (int i = 0; i < 3; ++i) out[k][i] = kCorner[k][i] ? mx[i] : mn[i];
+	}
+
+	// Oriented box: local box [lmn, lmx] placed by rotation rot (row-major 3x3, world = rot * local, as NiMatrix3) at org.
+	inline void OrientedCorners(const float* rot, const float* org, const float* lmn, const float* lmx, float (*out)[3]) {
+		for (int k = 0; k < 8; ++k) {
+			const float l[3] = { kCorner[k][0] ? lmx[0] : lmn[0], kCorner[k][1] ? lmx[1] : lmn[1], kCorner[k][2] ? lmx[2] : lmn[2] };
+			for (int i = 0; i < 3; ++i) out[k][i] = org[i] + rot[i * 3 + 0] * l[0] + rot[i * 3 + 1] * l[1] + rot[i * 3 + 2] * l[2];
+		}
+	}
+
+	// World point into the oriented box's frame: rot^T * (p - org).
+	inline void ToLocal(const float* rot, const float* org, const float* p, float* out) {
+		const float d[3] = { p[0] - org[0], p[1] - org[1], p[2] - org[2] };
+		for (int i = 0; i < 3; ++i) out[i] = rot[0 * 3 + i] * d[0] + rot[1 * 3 + i] * d[1] + rot[2 * 3 + i] * d[2];
+	}
+
+	// The axis-aligned box holding box [a, b] after x -> m * x + o (m row-major 3x3): centre moved, half sizes |m| * half.
+	inline void TransformedBox(const float* m, const float* o, const float* a, const float* b, float* mn, float* mx) {
+		const float c[3] = { (a[0] + b[0]) * 0.5f, (a[1] + b[1]) * 0.5f, (a[2] + b[2]) * 0.5f };
+		const float e[3] = { (b[0] - a[0]) * 0.5f, (b[1] - a[1]) * 0.5f, (b[2] - a[2]) * 0.5f };
+		for (int i = 0; i < 3; ++i) {
+			const float* r = m + i * 3;
+			const float ci = o[i] + r[0] * c[0] + r[1] * c[1] + r[2] * c[2];
+			const float ei = std::fabs(r[0]) * e[0] + std::fabs(r[1]) * e[1] + std::fabs(r[2]) * e[2];
+			mn[i] = ci - ei;
+			mx[i] = ci + ei;
+		}
+	}
+
+	inline float BoxVolume(const float* mn, const float* mx) {
+		return (mx[0] - mn[0]) * (mx[1] - mn[1]) * (mx[2] - mn[2]);
+	}
+
+	// The 12 triangles of a box as indices into its 8 corners (kCorner order): an index buffer for 8-vertex boxes.
+	static const uint16_t kBoxIndices[36] = { 0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+	                                          3, 6, 2, 3, 7, 6, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5 };
+
+	// A box's 8 corners (world), projected like ProjectToScreen.
+	inline bool ProjectCornerPoints(const float (*corners)[3], const float* origin, const float* view, const float* proj,
+		float vpX, float vpY, float vpW, float vpH, float minZ, float maxZ, uint32_t color, ScreenVertex* out8) {
+		Vertex c[8];
+		for (int k = 0; k < 8; ++k) c[k] = { corners[k][0] - origin[0], corners[k][1] - origin[1], corners[k][2] - origin[2], color };
+		return ProjectToScreen(c, 8, view, proj, vpX, vpY, vpW, vpH, minZ, maxZ, out8);
+	}
+
+	// How far (pixels) a moving camera can slide an occluder's edge across the screen in one frame: an edge at view
+	// depth `depth` moves halfWidth * proj11 * move / depth pixels for a sideways camera move of `move` units (things
+	// farther behind it move less, so this bounds what the edge uncovers). Capped at `cap` pixels.
+	inline float RevealPixels(float halfWidth, float proj11, float move, float depth, float cap) {
+		if (!(move > 0.0f) || !(depth > 0.0f)) return 0.0f;
+		const float px = halfWidth * std::fabs(proj11) * move / depth;
+		return px < cap ? px : cap;
+	}
+
+	// Grows a projected box on screen: each corner moves `px` pixels away from the corners' centre along x and y, so
+	// the box's screen rectangle grows by `px` on every side. Depths are kept. The moved corners' triangles need not
+	// cover all of the original outline (math_test finds slivers), so a grown box is drawn together with its original.
+	inline void GrowOnScreen(ScreenVertex* s8, float px) {
+		float cx = 0.0f, cy = 0.0f;
+		for (int k = 0; k < 8; ++k) { cx += s8[k].x; cy += s8[k].y; }
+		cx *= 0.125f; cy *= 0.125f;
+		for (int k = 0; k < 8; ++k) {
+			s8[k].x += s8[k].x >= cx ? px : -px;
+			s8[k].y += s8[k].y >= cy ? px : -px;
+		}
+	}
+
+	// A box (8 corners in kCorner order, edges at right angles: axis or oriented boxes) grown by `px` pixels' worth of
+	// world units at its farthest corner from `eye`, on every side: m = px * farthest distance / focal (focal in pixels).
+	// Every point within m of the box lies inside the grown one, so on screen it reaches at least px pixels past the
+	// box's outline wherever the box is nearer than its farthest corner. Returns m.
+	inline float PadCorners(const float (*c)[3], const float* eye, float px, float focal, float (*out)[3]) {
+		float far2 = 0.0f;
+		for (int k = 0; k < 8; ++k) {
+			const float dx = c[k][0] - eye[0], dy = c[k][1] - eye[1], dz = c[k][2] - eye[2];
+			const float d2 = dx * dx + dy * dy + dz * dz;
+			if (d2 > far2) far2 = d2;
+		}
+		const float m = focal > 0.0f ? px * std::sqrt(far2) / focal : 0.0f;
+		float u[3][3];
+		static const int kEdgeEnd[3] = { 1, 3, 4 };   // corner 0 -> x max, y max, z max
+		for (int i = 0; i < 3; ++i) {
+			float e[3], len = 0.0f;
+			for (int j = 0; j < 3; ++j) { e[j] = c[kEdgeEnd[i]][j] - c[0][j]; len += e[j] * e[j]; }
+			len = std::sqrt(len);
+			for (int j = 0; j < 3; ++j) u[i][j] = len > 1e-3f ? e[j] / len : (i == j ? 1.0f : 0.0f);   // flat side: world axis
+		}
+		for (int k = 0; k < 8; ++k)
+			for (int j = 0; j < 3; ++j) {
+				float p = c[k][j];
+				for (int i = 0; i < 3; ++i) p += (kCorner[k][i] ? m : -m) * u[i][j];
+				out[k][j] = p;
+			}
+		return m;
+	}
+
+	// The 36 triangle-list vertices of 8 projected corners.
+	inline void ExpandBox(const ScreenVertex* s8, ScreenVertex* out36) {
+		for (int k = 0; k < 36; ++k) out36[k] = s8[kBoxIndices[k]];
+	}
+
+	// The 36 triangle-list vertices of a box given by its 8 corners (world), projected like ProjectToScreen.
+	inline bool ProjectCorners(const float (*corners)[3], const float* origin, const float* view, const float* proj,
+		float vpX, float vpY, float vpW, float vpH, float minZ, float maxZ, uint32_t color, ScreenVertex* out) {
+		ScreenVertex s[8];
+		if (!ProjectCornerPoints(corners, origin, view, proj, vpX, vpY, vpW, vpH, minZ, maxZ, color, s)) return false;
+		ExpandBox(s, out);
+		return true;
+	}
+
+	// The 6 faces of a box as corner quads (kCorner numbering).
+	static const int kBoxFaces[6][4] = { { 0, 1, 2, 3 }, { 4, 5, 6, 7 }, { 0, 1, 5, 4 }, { 3, 2, 6, 7 }, { 0, 3, 7, 4 },
+	                                     { 1, 2, 6, 5 } };
+	constexpr float kClipGuard = 4.0f;            // clip-space |x|, |y| kept within this many half-screens of the centre
+	constexpr int kMaxClippedVertices = 6 * 7 * 3;   // a quad clipped by 5 planes has at most 9 corners = 7 triangles
+
+	// A box's corners in clip space (camera-relative points through view * projection).
+	inline void ClipCorners(const float (*corners)[3], const float* origin, const float* view, const float* proj, float (*c)[4]) {
+		for (int k = 0; k < 8; ++k) {
+			const float p[4] = { corners[k][0] - origin[0], corners[k][1] - origin[1], corners[k][2] - origin[2], 1.0f };
+			float v[4];
+			for (int j = 0; j < 4; ++j) v[j] = p[0] * view[0 * 4 + j] + p[1] * view[1 * 4 + j] + p[2] * view[2 * 4 + j] + p[3] * view[3 * 4 + j];
+			for (int j = 0; j < 4; ++j) c[k][j] = v[0] * proj[0 * 4 + j] + v[1] * proj[1 * 4 + j] + v[2] * proj[2 * 4 + j] + v[3] * proj[3 * 4 + j];
+		}
+	}
+
+	// Signed distance of a clip-space point to plane i (>= 0 = kept): w >= wMin, then |x| and |y| <= kClipGuard * w.
+	inline float ClipPlane(const float* v, int i, float wMin) {
+		switch (i) {
+		case 0: return v[3] - wMin;
+		case 1: return kClipGuard * v[3] - v[0];
+		case 2: return kClipGuard * v[3] + v[0];
+		case 3: return kClipGuard * v[3] - v[1];
+		default: return kClipGuard * v[3] + v[1];
+		}
+	}
+
+	// A box that reaches behind the camera (or far past a screen edge), cut to what can be drawn pre-transformed: each
+	// face is clipped (Sutherland-Hodgman, clip space) at w = wMin and at kClipGuard screens to each side, fanned into
+	// triangles and projected like ProjectToScreen. The cut parts are behind the camera or far off screen, where they
+	// cover no pixel. Depth is clamped into [minZ, maxZ]: points closer than the near plane count as the nearest depth,
+	// which can only make the box easier to see. Returns the triangle-list vertex count (at most kMaxClippedVertices);
+	// 0 = no part of the box is in front of the camera.
+	inline int ClipAndProject(const float (*c)[4], float vpX, float vpY, float vpW, float vpH, float minZ, float maxZ,
+		uint32_t color, ScreenVertex* out, float wMin) {
+		const float lo = minZ < maxZ ? minZ : maxZ, hi = minZ < maxZ ? maxZ : minZ;
+		int n = 0;
+		for (const int* face : kBoxFaces) {
+			float poly[9][4], next[9][4];
+			int m = 4;
+			for (int k = 0; k < 4; ++k)
+				for (int j = 0; j < 4; ++j) poly[k][j] = c[face[k]][j];
+			for (int plane = 0; plane < 5 && m >= 3; ++plane) {
+				int o = 0;
+				for (int e = 0; e < m; ++e) {
+					const float* a = poly[e];
+					const float* b = poly[(e + 1) % m];
+					const float da = ClipPlane(a, plane, wMin), db = ClipPlane(b, plane, wMin);
+					if (da >= 0.0f) { for (int j = 0; j < 4; ++j) next[o][j] = a[j]; ++o; }
+					if ((da >= 0.0f) != (db >= 0.0f)) {
+						const float t = da / (da - db);
+						for (int j = 0; j < 4; ++j) next[o][j] = a[j] + (b[j] - a[j]) * t;
+						if (plane == 0) next[o][3] = wMin;
+						++o;
+					}
+				}
+				m = o;
+				for (int k = 0; k < m; ++k)
+					for (int j = 0; j < 4; ++j) poly[k][j] = next[k][j];
+			}
+			if (m < 3) continue;
+			ScreenVertex s[9];
+			for (int k = 0; k < m; ++k) {
+				const float w = poly[k][3] > wMin ? poly[k][3] : wMin;
+				const float iw = 1.0f / w;
+				float z = minZ + poly[k][2] * iw * (maxZ - minZ);
+				z = z < lo ? lo : (z > hi ? hi : z);
+				s[k] = { vpX + (poly[k][0] * iw * 0.5f + 0.5f) * vpW - 0.5f, vpY + (0.5f - poly[k][1] * iw * 0.5f) * vpH - 0.5f,
+				         z, iw, color };
+			}
+			for (int k = 1; k + 1 < m; ++k) { out[n++] = s[0]; out[n++] = s[k]; out[n++] = s[k + 1]; }
+		}
+		return n;
+	}
+
+	inline int ProjectCornersClipped(const float (*corners)[3], const float* origin, const float* view, const float* proj,
+		float vpX, float vpY, float vpW, float vpH, float minZ, float maxZ, uint32_t color, ScreenVertex* out, float wMin = 1.0f) {
+		float c[8][4];
+		ClipCorners(corners, origin, view, proj, c);
+		return ClipAndProject(c, vpX, vpY, vpW, vpH, minZ, maxZ, color, out, wMin);
+	}
+
+	// A box's test vertices in one pass over its corners' clip coordinates: the 8 projected corners when nothing needs
+	// cutting (plain = true; drawn as kBoxIndices triangles, the same values ProjectCornerPoints gives), else the clipped
+	// triangle list. Returns the vertex count (8, the clipped count, or 0 = no part in front of the camera).
+	inline int ProjectBoxForTest(const float (*corners)[3], const float* origin, const float* view, const float* proj,
+		float vpX, float vpY, float vpW, float vpH, float minZ, float maxZ, uint32_t color, ScreenVertex* out, bool& plain,
+		float wMin = 1.0f) {
+		float c[8][4];
+		ClipCorners(corners, origin, view, proj, c);
+		plain = true;
+		for (int k = 0; k < 8 && plain; ++k)
+			for (int i = 0; i < 5 && plain; ++i) plain = ClipPlane(c[k], i, wMin) >= 0.0f;
+		if (!plain) return ClipAndProject(c, vpX, vpY, vpW, vpH, minZ, maxZ, color, out, wMin);
+		for (int k = 0; k < 8; ++k) {
+			const float iw = 1.0f / c[k][3];
+			out[k] = { vpX + (c[k][0] * iw * 0.5f + 0.5f) * vpW - 0.5f, vpY + (0.5f - c[k][1] * iw * 0.5f) * vpH - 0.5f,
+			           minZ + c[k][2] * iw * (maxZ - minZ), iw, color };
+		}
+		return 8;
+	}
+
+	// Whether every corner lies inside the planes ProjectCornersClipped cuts at (then the plain 8-corner path is exact).
+	inline bool CornersUnclipped(const float (*corners)[3], const float* origin, const float* view, const float* proj, float wMin = 1.0f) {
+		float c[8][4];
+		ClipCorners(corners, origin, view, proj, c);
+		for (int k = 0; k < 8; ++k)
+			for (int plane = 0; plane < 5; ++plane)
+				if (ClipPlane(c[k], plane, wMin) < 0.0f) return false;
+		return true;
+	}
+
+	// GrowOnScreen for any number of vertices (a clipped box's triangle list): each moves `px` pixels away from their
+	// centre along x and y. Like GrowOnScreen, this can leave a sliver of the original outline uncovered, so a grown box
+	// is always drawn together with its original triangles (RunQueries).
+	inline void GrowOnScreenN(ScreenVertex* s, int count, float px) {
+		if (count <= 0) return;
+		float cx = 0.0f, cy = 0.0f;
+		for (int k = 0; k < count; ++k) { cx += s[k].x; cy += s[k].y; }
+		cx /= (float)count; cy /= (float)count;
+		for (int k = 0; k < count; ++k) {
+			s[k].x += s[k].x >= cx ? px : -px;
+			s[k].y += s[k].y >= cy ? px : -px;
+		}
+	}
+
+	// The same as BoxTriangles + ProjectToScreen, projecting only the 8 corners (the 36 vertices are copies of them).
+	inline bool ProjectBox(const float* mn, const float* mx, const float* origin, const float* view, const float* proj,
+		float vpX, float vpY, float vpW, float vpH, float minZ, float maxZ, uint32_t color, ScreenVertex* out) {
+		float corners[8][3];
+		AxisCorners(mn, mx, corners);
+		return ProjectCorners(corners, origin, view, proj, vpX, vpY, vpW, vpH, minZ, maxZ, color, out);
+	}
+
+	// Distance from p to the nearest point of the box (0 inside).
+	inline float DistanceToBox(const float* p, const float* mn, const float* mx) {
+		float d2 = 0.0f;
+		for (int i = 0; i < 3; ++i) {
+			const float v = p[i] < mn[i] ? mn[i] - p[i] : p[i] > mx[i] ? p[i] - mx[i] : 0.0f;
+			d2 += v * v;
+		}
+		return std::sqrt(d2);
+	}
+
+	inline float DistanceToOrientedBox(const float* p, const float* rot, const float* org, const float* lmn, const float* lmx) {
+		float l[3];
+		ToLocal(rot, org, p, l);
+		return DistanceToBox(l, lmn, lmx);
+	}
+}

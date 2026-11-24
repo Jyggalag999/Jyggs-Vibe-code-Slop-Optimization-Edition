@@ -1,14 +1,32 @@
-# Jyggs Vibe-code Slop (Optimization Edition)
+# NVR Unofficial Jyggs Vibecoded Slop v1.2
 
-An unofficial side build of **New Vegas Reloaded 4.4.1** for Fallout: New Vegas. Yes, the name is a joke. The numbers aren't!
+An unofficial side build of **New Vegas Reloaded 4.4.1** for Fallout: New Vegas.
 
 I love how 4.4.1 looks, I just didn't love how it ran on my modlist. Every door into a lamp-lit interior froze the game for
 over a second, and outside I was stuck in the 50s on a card that should do a lot better. So this build keeps the 4.4.1
 picture and goes after the cost: the stalls, the per-frame overhead, and a settings menu you can actually use with a mouse.
 
 The one thing that does change the picture is `PerformancePreset`, and it's **on by default**. It trims the sun and lamp
-shadows (shorter range, a bit softer, fewer tiny objects casting them) for roughly 2 ms back per frame. Don't want that?
-Switch it off on the menu's Performance page and you have the full 4.4.1 shadows again. Your own settings are never touched.
+shadows (shorter range, a bit softer, fewer tiny objects casting them) for roughly 2 ms back per frame. Since 1.2 two small terrain shortcuts
+(`IsoHeightTaps`, `ParallaxLite`) are on by default too and change the picture slightly. Don't want any of that? Switch
+them off on the menu's Performance page and you have the full 4.4.1 picture again. Your own settings are never touched.
+
+## New in 1.2
+
+- **Menu redone.** Search, Save and Revert sit in a fixed bar at the top, the sidebar resizes, long names don't get cut
+  off any more, and tables with several columns scroll sideways instead of squashing.
+- **Typing works.** On some setups the menu never got key presses from Windows, so you couldn't type values. It now
+  reads the keyboard the same way the game does.
+- **Keybinds page.** Every hotkey (menu, Locations window, save, occlusion toggle, screenshot...) can be rebound in the
+  menu: hit Rebind, press the new key. It warns you if a key is already taken.
+- **Preset values are editable.** Rows set by the Performance preset used to be greyed out. Now you can change them;
+  your value is saved as your own override of the preset, and Reset puts the preset's value back.
+- **Locations window (Delete key).** A preset manager for your Cartographer INIs: create, copy, edit and delete
+  presets, see every cell and worldspace that uses one, and hit **Go** to teleport there.
+- **More speed work, on by default:** built-in occlusion culling (Conor's Occlusion Culling 1.2.3), terrain
+  `SkipEmptyLayers`, and `HiddenObjectCulling`. Numbers below.
+
+Full list in [CHANGELOG.md](CHANGELOG.md).
 
 ## The door freeze is gone
 
@@ -49,6 +67,21 @@ with the preset. I haven't measured them one by one yet, so I'm not putting numb
 And the preset: on my RX 7900 XTX it took NVR's own GPU time from about **6.2 to 4.0 ms** per frame in the Wasteland. That's
 one card in one area, so if you benchmark it on yours, I'd love to see the results!
 
+New in 1.2, measured on my RX 7900 XTX with DXVK in the Wasteland (Mojave Outpost), flipping one setting on and off in
+the same spot:
+
+| | Off | On |
+|---|---|---|
+| Built-in occlusion culling | 22.00 ms (45.5 FPS) | 19.68 ms (50.8 FPS), about +12% FPS |
+| Terrain `SkipEmptyLayers` | 21.74 ms | 21.57 ms, -0.18 ms |
+| `IsoHeightTaps` | 18.37 ms | 18.64 ms, no measurable gain |
+| `ParallaxLite` | 19.45 ms | 19.36 ms, about -0.1 ms (noise level) |
+| `HiddenObjectCulling` | | no measurable difference outdoors |
+
+**Your mileage may vary.** I tested these quickly, in one or two spots, on one PC, not across lots of cells. How much you
+get depends on the cell, your GPU and CPU and your settings, and some of these didn't show a gain where I tested them.
+Interiors and the Strip/Freeside weren't measured for the 1.2 features at all.
+
 Everything I've measured, with where and how, lives in [docs/OPTIMIZATIONS.md](docs/OPTIMIZATIONS.md). If I didn't
 measure something, it says so.
 
@@ -69,7 +102,7 @@ so the launcher saw your real card and could pick different settings.
 Grab the zip from [Releases](https://github.com/Jyggalag999/Jyggs-Vibe-code-Slop-Optimization-Edition/releases). It's
 the whole thing, DLL, shaders and textures, so you don't need the official NVR files. Install it like any other mod with
 your mod manager (or unzip it into `Data`), and disable or remove any other NVR so they don't overwrite each other. The End
-key opens the menu.
+key opens the menu and Delete opens the Locations window; both can be changed on the menu's Keybinds page.
 
 Updating from another NVR build? Keep your `NewVegasReloaded.dll.toml`, the zip doesn't include one. On a fresh install the
 game makes it for you from the defaults.
